@@ -1,0 +1,40 @@
+name: Generate PVU Upsell Document
+
+on:
+  workflow_dispatch:
+    inputs:
+      payload:
+        description: "JotForm payload JSON from Power Automate"
+        required: true
+        type: string
+
+jobs:
+  generate-document:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install \
+            reportlab \
+            pillow \
+            requests \
+            anthropic \
+            numpy
+
+      - name: Generate upsell PDF and upload to SharePoint
+        env:
+          TENANT_ID:         ${{ secrets.TENANT_ID }}
+          CLIENT_ID:         ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET:     ${{ secrets.CLIENT_SECRET }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          JOTFORM_PAYLOAD:   ${{ inputs.payload }}
+        run: python main.py
