@@ -44,8 +44,8 @@ INCLUDE_EXAMPLE_PHOTOS = {
     "Polymer Coating":   True,
     "Interior Detail":   False,   # no example photos yet
     "Exterior Detail":   True,
-    "Carpet Extraction": True,
-    "Xylon":             False,   # no example photos yet
+    "Carpet Extraction": False,   # no example photos yet
+    "Xylon":             True,
 }
 
 # ─────────────────────────────────────────────────────────────
