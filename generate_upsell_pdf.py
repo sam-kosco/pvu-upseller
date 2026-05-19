@@ -41,7 +41,7 @@ from reportlab.lib.units import inch
 from reportlab.lib import colors
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Image as RLImage,
-    Table, TableStyle, HRFlowable
+    Table, TableStyle, HRFlowable, KeepTogether
 )
 from reportlab.lib.enums import TA_CENTER
 from reportlab.pdfgen import canvas as rl_canvas
@@ -406,12 +406,25 @@ def pil_to_rl(pil_img: Image.Image, max_width: float, max_height: float) -> RLIm
 # ─────────────────────────────────────────────────────────────
 # Photo block builders
 # ─────────────────────────────────────────────────────────────
-def build_condition_photo_block(pil_images: list) -> list:
+def build_condition_photo_block(pil_images: list, tail: str = "") -> list:
     if not pil_images:
         return []
+    styles    = getSampleStyleSheet()
+    caption_s = ParagraphStyle("caption_c", parent=styles["Normal"],
+                               fontSize=8, fontName="Helvetica-Bold",
+                               alignment=TA_CENTER,
+                               textColor=colors.HexColor("#333333"),
+                               spaceAfter=3)
+    label_text = f"{tail} Current Condition" if tail else "Current Condition"
     n = len(pil_images)
     if n == 1:
-        return [pil_to_rl(pil_images[0], CONTENT_W, 3.5 * inch), Spacer(1, 8)]
+        return [
+            KeepTogether([
+                Paragraph(label_text, caption_s),
+                pil_to_rl(pil_images[0], CONTENT_W, 3.5 * inch),
+            ]),
+            Spacer(1, 8),
+        ]
     col_w = (CONTENT_W - 6) / 2
     rows  = []
     for i in range(0, n, 2):
@@ -424,22 +437,27 @@ def build_condition_photo_block(pil_images: list) -> list:
         ("LEFTPADDING",(0,0),(-1,-1),3), ("RIGHTPADDING",(0,0),(-1,-1),3),
         ("TOPPADDING",(0,0),(-1,-1),3),  ("BOTTOMPADDING",(0,0),(-1,-1),3),
     ]))
-    return [tbl, Spacer(1, 8)]
+    return [KeepTogether([Paragraph(label_text, caption_s), tbl]), Spacer(1, 8)]
 
 
-def build_example_photo_block(before_img, after_img) -> list:
+def build_example_photo_block(before_img, after_img, label: str = "Service Example Photo") -> list:
     if before_img is None and after_img is None:
         return []
-    styles  = getSampleStyleSheet()
-    label_s = ParagraphStyle("label", parent=styles["Normal"],
-                             fontSize=9, alignment=TA_CENTER,
-                             textColor=colors.HexColor("#444444"))
+    styles    = getSampleStyleSheet()
+    caption_s = ParagraphStyle("caption_e", parent=styles["Normal"],
+                               fontSize=8, fontName="Helvetica-Bold",
+                               alignment=TA_CENTER,
+                               textColor=colors.HexColor("#333333"),
+                               spaceAfter=3)
+    label_s   = ParagraphStyle("label", parent=styles["Normal"],
+                               fontSize=9, alignment=TA_CENTER,
+                               textColor=colors.HexColor("#444444"))
     col_w = (CONTENT_W - 6) / 2
 
-    def cell(img, label):
+    def cell(img, before_after):
         if img is None:
             return ""
-        return [pil_to_rl(img, col_w, 2.5 * inch), Paragraph(f"<b>{label}</b>", label_s)]
+        return [pil_to_rl(img, col_w, 2.5 * inch), Paragraph(f"<b>{before_after}</b>", label_s)]
 
     tbl = Table([[cell(before_img, "BEFORE"), cell(after_img, "AFTER")]],
                 colWidths=[col_w, col_w])
@@ -448,7 +466,13 @@ def build_example_photo_block(before_img, after_img) -> list:
         ("LEFTPADDING",(0,0),(-1,-1),3), ("RIGHTPADDING",(0,0),(-1,-1),3),
         ("TOPPADDING",(0,0),(-1,-1),3),  ("BOTTOMPADDING",(0,0),(-1,-1),3),
     ]))
-    return [tbl, Spacer(1, 8)]
+    return [
+        KeepTogether([
+            Paragraph(label, caption_s),
+            tbl,
+        ]),
+        Spacer(1, 8),
+    ]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -537,7 +561,7 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
                     story.append(Paragraph(polished, body_s))
 
             if photos:
-                story.extend(build_condition_photo_block(photos))
+                story.extend(build_condition_photo_block(photos, tail=data.get("tail", "")))
 
             story.append(Spacer(1, 6))
 
@@ -564,7 +588,13 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
             print(f"  Fetching example photos for {photo_key}...")
             before_img = fetch_sharepoint_photo(graph_token, before_name)
             after_img  = fetch_sharepoint_photo(graph_token, after_name)
-            story.extend(build_example_photo_block(before_img, after_img))
+            # Build label: include any services sharing this photo set
+            sharers = [photo_key] + [
+                svc for svc, donor in DEFER_EXAMPLE_PHOTOS_TO.items()
+                if donor == photo_key and svc in upsell_map
+            ]
+            example_label = " and ".join(sharers) + " Example Photo"
+            story.extend(build_example_photo_block(before_img, after_img, label=example_label))
             rendered_photo_keys.add(photo_key)
 
     # ── Build PDF ─────────────────────────────────────────────
