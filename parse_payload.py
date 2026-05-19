@@ -106,7 +106,7 @@ def parse_payload(body: dict) -> dict:
 
     result = {
         "technician":        _get(body, 3),
-        "tail":              _get(body, 4),
+        "tail":              _get(body, 4).upper(),
         "indoc_date":        _get(body, 5),
         "rts_date":          _get(body, 6),
         "included_services": included_services,
