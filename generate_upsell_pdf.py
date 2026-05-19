@@ -4,6 +4,11 @@ PVU Upsell PDF Generator
 Takes the structured dict from parse_payload.py and produces a
 polished sales PDF matching the Foxtrot Aviation example document style.
 
+Services are organized into three supersections:
+  1. Metal Polish & Protection  — Brightwork, Xylon
+  2. Paint Correction & Protective Coatings — Ceramic Coating, Permagard, Polymer
+  3. Detail Work — Interior Detail, Exterior Detail, Carpet Extraction
+
 Pipeline:
   1. service_context.md is loaded once at startup as the Claude system prompt
   2. For each upsell service, Claude rewrites Stephen's raw notes using:
@@ -12,8 +17,8 @@ Pipeline:
        - The condition photos from the JotForm (vision — Claude sees the aircraft)
   3. Marketing before/after photos are fetched from SharePoint via Graph API
   4. ReportLab assembles single-column PDF:
-       logo -> aircraft header -> Stephen's intro -> per-service sections
-       (boilerplate + AI notes + condition photos + B/A photos) -> footer
+       logo -> aircraft header -> Stephen's intro ->
+       supersection header + boilerplate -> per-service blocks -> footer
 
 Usage:
     from generate_upsell_pdf import generate_pdf
@@ -40,6 +45,48 @@ from reportlab.platypus import (
 from reportlab.lib.enums import TA_CENTER
 
 # ─────────────────────────────────────────────────────────────
+# SUPERSECTION STRUCTURE
+# Defines the three sections, their order, and which services
+# belong to each. Services not listed here are ignored.
+# ─────────────────────────────────────────────────────────────
+SUPERSECTIONS = [
+    {
+        "title":    "Metal Polish & Protection",
+        "services": ["Brightwork", "Xylon"],
+        "boilerplate": (
+            "Your aircraft's bare metal surfaces — leading edges, nacelles, wing tips, "
+            "and stabilizers — are among the most exposed components on the airframe. "
+            "Regular polishing and protection keep these surfaces free of oxidation and "
+            "corrosion, preserve their appearance, and can even improve aerodynamic "
+            "performance by maintaining a smooth, laminar surface."
+        ),
+    },
+    {
+        "title":    "Paint Correction & Protective Coatings",
+        "services": ["Ceramic Coating", "Permagard Coating", "Polymer Coating"],
+        "boilerplate": (
+            "Aircraft paint is constantly under attack from UV radiation, exhaust carbon, "
+            "hydraulic fluids, and environmental contaminants. Left unprotected, even "
+            "well-maintained paint oxidizes, becomes porous, and loses its gloss — "
+            "increasing drag and reducing long-term value. The options below represent "
+            "good, better, and best levels of protection, all completable without "
+            "affecting your return-to-service date."
+        ),
+    },
+    {
+        "title":    "Detail Work",
+        "services": ["Interior Detail", "Exterior Detail", "Carpet Extraction"],
+        "boilerplate": (
+            "A thorough detail during your maintenance event is the most cost-effective "
+            "way to protect your aircraft's interior and exterior surfaces between "
+            "major service intervals. Our team is already on-site and familiar with "
+            "your aircraft, making this the ideal time to address accumulated wear "
+            "and restore a like-new appearance inside and out."
+        ),
+    },
+]
+
+# ─────────────────────────────────────────────────────────────
 # CONFIG — toggle before/after marketing photos per service
 # ─────────────────────────────────────────────────────────────
 INCLUDE_EXAMPLE_PHOTOS = {
@@ -48,7 +95,7 @@ INCLUDE_EXAMPLE_PHOTOS = {
     "Permagard Coating": True,
     "Polymer Coating":   True,
     "Interior Detail":   False,
-    "Exterior Detail":   False,
+    "Exterior Detail":   True,
     "Carpet Extraction": True,
     "Xylon":             False,
 }
@@ -71,9 +118,9 @@ EXAMPLE_PHOTO_NAMES = {
 }
 
 # ─────────────────────────────────────────────────────────────
-# Boilerplate marketing text per service
-# Stephen replaces these placeholder strings with his actual copy.
-# The AI rewriter reads this text and will NOT repeat what is already here.
+# Per-service boilerplate
+# Stephen replaces these placeholders with his actual copy.
+# The AI rewriter reads this and will NOT repeat what is here.
 # ─────────────────────────────────────────────────────────────
 SERVICE_BOILERPLATE = {
     "Brightwork": (
@@ -131,7 +178,7 @@ STEPHEN_INTRO = (
 
 # ─────────────────────────────────────────────────────────────
 # Load service_context.md once at module startup
-# The file must be in the same directory as this script in the repo.
+# Place service_context.md in the same directory as this script.
 # ─────────────────────────────────────────────────────────────
 def _load_service_context() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
@@ -149,11 +196,6 @@ SERVICE_CONTEXT = _load_service_context()
 # PIL Image -> base64 JPEG helper (for Claude vision API)
 # ─────────────────────────────────────────────────────────────
 def _pil_to_b64(pil_img: Image.Image, max_px: int = 1024) -> str:
-    """
-    Resize a PIL image so its longest side is at most max_px,
-    then return it as a base64-encoded JPEG string.
-    Keeps the API payload small.
-    """
     img = pil_img.convert("RGB")
     w, h = img.size
     if max(w, h) > max_px:
@@ -170,30 +212,22 @@ def _pil_to_b64(pil_img: Image.Image, max_px: int = 1024) -> str:
 def rewrite_notes(
     raw_notes: str,
     service_name: str,
-    condition_photos: list,      # list of PIL Images (may be empty)
+    condition_photos: list,
 ) -> str:
     """
     Calls the Claude API to produce a professional, client-facing observation
-    paragraph for one service section.
-
-    The API call includes:
-      - system prompt: service_context.md (full Foxtrot service knowledge base)
-      - the boilerplate text already in the document (to avoid redundancy)
+    paragraph for one service section. Includes:
+      - system prompt: service_context.md knowledge base
+      - the per-service boilerplate (to avoid redundancy)
       - Stephen's raw field note
-      - up to 3 condition photos (vision) so Claude sees what was observed
-
-    Returns raw_notes unchanged if the API call fails.
+      - up to 3 condition photos (vision)
     """
     if not raw_notes and not condition_photos:
         return ""
 
     boilerplate = SERVICE_BOILERPLATE.get(service_name, "")
-
-    # Detect whether boilerplate is still a placeholder (starts with service name +
-    # " Boilerplate Text") — if so, don't bother telling Claude to avoid it
     boilerplate_is_placeholder = boilerplate.startswith(service_name + " Boilerplate Text")
 
-    # ── Build user message content ────────────────────────────
     content = []
 
     instruction = (
@@ -216,9 +250,7 @@ def rewrite_notes(
             f"\"{raw_notes}\"\n\n"
         )
     else:
-        instruction += (
-            f"No field note was provided. Write based on what you observe in the photos.\n\n"
-        )
+        instruction += "No field note was provided. Write based on what you observe in the photos.\n\n"
 
     if condition_photos:
         instruction += (
@@ -238,7 +270,6 @@ def rewrite_notes(
 
     content.append({"type": "text", "text": instruction})
 
-    # Attach up to 3 condition photos
     for photo in condition_photos[:3]:
         try:
             content.append({
@@ -252,7 +283,6 @@ def rewrite_notes(
         except Exception as e:
             print(f"  Warning: could not encode photo for {service_name}: {e}")
 
-    # ── API call ──────────────────────────────────────────────
     try:
         client = anthropic.Anthropic()
         kwargs = {
@@ -280,7 +310,6 @@ def rewrite_notes(
 # SharePoint photo fetcher
 # ─────────────────────────────────────────────────────────────
 def fetch_sharepoint_photo(graph_token: str, filename: str) -> Image.Image | None:
-    """Fetch a single photo from the Service Example Photos folder on SharePoint."""
     path = f"{EXAMPLE_PHOTO_BASE}/{filename}"
     url  = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{path}:/content"
     headers = {"Authorization": f"Bearer {graph_token}"}
@@ -303,7 +332,6 @@ MARGIN     = 0.75 * inch
 CONTENT_W  = PAGE_WIDTH - 2 * MARGIN
 
 def pil_to_rl(pil_img: Image.Image, max_width: float, max_height: float) -> RLImage:
-    """Convert a PIL Image to a ReportLab flowable, scaled to fit."""
     buf = io.BytesIO()
     pil_img.convert("RGB").save(buf, format="JPEG", quality=85)
     buf.seek(0)
@@ -316,7 +344,6 @@ def pil_to_rl(pil_img: Image.Image, max_width: float, max_height: float) -> RLIm
 # Photo block builders
 # ─────────────────────────────────────────────────────────────
 def build_condition_photo_block(pil_images: list) -> list:
-    """Single or two-column condition photo block from JotForm photos."""
     if not pil_images:
         return []
     n         = len(pil_images)
@@ -345,7 +372,6 @@ def build_condition_photo_block(pil_images: list) -> list:
 
 
 def build_example_photo_block(before_img, after_img) -> list:
-    """Labelled Before / After two-column block from SharePoint marketing photos."""
     if before_img is None and after_img is None:
         return []
     styles  = getSampleStyleSheet()
@@ -394,14 +420,20 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
     str : absolute path to the saved PDF
     """
     styles  = getSampleStyleSheet()
-    title_s = ParagraphStyle("title_s", parent=styles["Normal"],
-                             fontSize=12, leading=16, spaceAfter=2,
-                             fontName="Helvetica-Bold")
-    body_s  = ParagraphStyle("body_s", parent=styles["Normal"],
-                             fontSize=10, leading=14, spaceAfter=6)
-    head_s  = ParagraphStyle("head_s", parent=styles["Heading2"],
-                             fontSize=11, leading=14, spaceAfter=4,
-                             fontName="Helvetica-Bold")
+
+    # ── Styles ────────────────────────────────────────────────
+    title_s    = ParagraphStyle("title_s", parent=styles["Normal"],
+                                fontSize=12, leading=16, spaceAfter=2,
+                                fontName="Helvetica-Bold")
+    body_s     = ParagraphStyle("body_s", parent=styles["Normal"],
+                                fontSize=10, leading=14, spaceAfter=6)
+    super_s    = ParagraphStyle("super_s", parent=styles["Normal"],
+                                fontSize=13, leading=17, spaceAfter=4,
+                                fontName="Helvetica-Bold",
+                                textColor=colors.HexColor("#1a1a1a"))
+    service_s  = ParagraphStyle("service_s", parent=styles["Normal"],
+                                fontSize=11, leading=14, spaceAfter=4,
+                                fontName="Helvetica-Bold")
 
     story = []
 
@@ -426,48 +458,75 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
     story.append(Paragraph(STEPHEN_INTRO, body_s))
     story.append(Spacer(1, 8))
 
-    # ── Upsell service sections ───────────────────────────────
-    for upsell in data.get("upsells", []):
-        service = upsell["service"]
-        price   = upsell.get("price", "")
-        notes   = upsell.get("notes", "")
-        photos  = upsell.get("photos", [])
+    # ── Build a lookup of upsell services by name ─────────────
+    upsell_map = {u["service"]: u for u in data.get("upsells", [])}
 
-        story.append(HRFlowable(width="100%", thickness=0.5,
-                                color=colors.HexColor("#cccccc"), spaceAfter=6))
+    # ── Supersections ────────────────────────────────────────
+    for section in SUPERSECTIONS:
+        # Find which services in this section were actually upsold
+        section_upsells = [
+            upsell_map[svc]
+            for svc in section["services"]
+            if svc in upsell_map
+        ]
 
-        # Section header: "Service Name: $Price"
-        price_str = f": ${price}" if price else ""
-        story.append(Paragraph(f"{service}{price_str}", head_s))
+        # Skip the entire supersection if none of its services are upsells
+        if not section_upsells:
+            continue
 
-        # Boilerplate (Stephen's fixed pitch for this service)
-        boilerplate = SERVICE_BOILERPLATE.get(service, "")
-        if boilerplate:
-            story.append(Paragraph(boilerplate, body_s))
+        # Supersection divider + title
+        story.append(HRFlowable(width="100%", thickness=1.0,
+                                color=colors.HexColor("#888888"), spaceAfter=6))
+        story.append(Paragraph(section["title"], super_s))
 
-        # AI-rewritten aircraft-specific observation
-        if notes or photos:
-            print(f"  Rewriting notes for {service} "
-                  f"({'with' if photos else 'without'} photos)...")
-            polished = rewrite_notes(notes, service, photos)
-            if polished:
-                story.append(Paragraph(polished, body_s))
-
-        # Condition photos from JotForm
-        if photos:
-            story.extend(build_condition_photo_block(photos))
-
-        # Marketing before/after photos from SharePoint
-        if INCLUDE_EXAMPLE_PHOTOS.get(service, False):
-            photo_names = EXAMPLE_PHOTO_NAMES.get(service)
-            if photo_names:
-                before_name, after_name = photo_names
-                print(f"  Fetching example photos for {service}...")
-                before_img = fetch_sharepoint_photo(graph_token, before_name)
-                after_img  = fetch_sharepoint_photo(graph_token, after_name)
-                story.extend(build_example_photo_block(before_img, after_img))
+        # Supersection boilerplate
+        if section["boilerplate"]:
+            story.append(Paragraph(section["boilerplate"], body_s))
 
         story.append(Spacer(1, 6))
+
+        # ── Individual service blocks ────────────────────────
+        for upsell in section_upsells:
+            service = upsell["service"]
+            price   = upsell.get("price", "")
+            notes   = upsell.get("notes", "")
+            photos  = upsell.get("photos", [])
+
+            # Service header — lighter divider between services within a section
+            story.append(HRFlowable(width="100%", thickness=0.4,
+                                    color=colors.HexColor("#cccccc"), spaceAfter=4))
+
+            price_str = f": ${price}" if price else ""
+            story.append(Paragraph(f"{service}{price_str}", service_s))
+
+            # Per-service boilerplate (Stephen's pitch for this specific service)
+            svc_boilerplate = SERVICE_BOILERPLATE.get(service, "")
+            if svc_boilerplate:
+                story.append(Paragraph(svc_boilerplate, body_s))
+
+            # AI-rewritten aircraft-specific observation
+            if notes or photos:
+                print(f"  Rewriting notes for {service} "
+                      f"({'with' if photos else 'without'} photos)...")
+                polished = rewrite_notes(notes, service, photos)
+                if polished:
+                    story.append(Paragraph(polished, body_s))
+
+            # Condition photos from JotForm
+            if photos:
+                story.extend(build_condition_photo_block(photos))
+
+            # Marketing before/after photos from SharePoint
+            if INCLUDE_EXAMPLE_PHOTOS.get(service, False):
+                photo_names = EXAMPLE_PHOTO_NAMES.get(service)
+                if photo_names:
+                    before_name, after_name = photo_names
+                    print(f"  Fetching example photos for {service}...")
+                    before_img = fetch_sharepoint_photo(graph_token, before_name)
+                    after_img  = fetch_sharepoint_photo(graph_token, after_name)
+                    story.extend(build_example_photo_block(before_img, after_img))
+
+            story.append(Spacer(1, 6))
 
     # ── Footer ────────────────────────────────────────────────
     story.append(HRFlowable(width="100%", thickness=0.5,
@@ -506,8 +565,26 @@ if __name__ == "__main__":
         "customer":          "Duncan Aviation",
         "indoc_date":        "2026-04-17",
         "rts_date":          "2026-04-30",
-        "included_services": ["Brightwork", "Ceramic Coating"],
+        "included_services": ["Brightwork"],
         "upsells": [
+            {
+                "service": "Brightwork",
+                "price":   "1800",
+                "notes":   "leading edges have moderate oxidation, some pitting near nacelles",
+                "photos":  [_fake_photo((210, 210, 200)), _fake_photo((200, 205, 210))],
+            },
+            {
+                "service": "Xylon",
+                "price":   "1200",
+                "notes":   "no current protection on leading edges",
+                "photos":  [],
+            },
+            {
+                "service": "Ceramic Coating",
+                "price":   "26760",
+                "notes":   "paint has minor checking, slight oxidation on crown",
+                "photos":  [_fake_photo((230, 225, 220))],
+            },
             {
                 "service": "Interior Detail",
                 "price":   "850",
@@ -516,15 +593,15 @@ if __name__ == "__main__":
             },
             {
                 "service": "Carpet Extraction",
-                "price":   "1280",
-                "notes":   "carpet is really worn, lots of dirt tracked in",
+                "price":   "420",
+                "notes":   "carpet worn, heavy traffic areas",
                 "photos":  [_fake_photo((190, 210, 190))],
             },
         ],
     }
 
     import generate_upsell_pdf as _self
-    _self.rewrite_notes          = lambda notes, svc, photos: f"[AI rewrite of: {notes}]"
+    _self.rewrite_notes          = lambda notes, svc, photos: f"[AI: {notes or 'visual observation'}]"
     _self.fetch_sharepoint_photo = lambda token, fname: _fake_photo((220, 220, 180))
 
     print("Running smoke test (mocked AI + SharePoint)...")
