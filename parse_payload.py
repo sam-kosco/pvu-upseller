@@ -113,6 +113,7 @@ def parse_payload(body: dict) -> dict:
         "customer":          _get(body, 8),
         "make":              _get(body, 47),
         "model":             _get(body, 48),
+        "owner":             _get(body, 54),
         "upsells":           [],
     }
 
