@@ -5,8 +5,10 @@ Takes the structured dict from parse_payload.py and produces a
 polished sales PDF matching the Foxtrot Aviation example document style.
 
 Layout:
-  - Page 1 header:  Foxtrot Aviation logo (centered, top of page 1 only)
-  - Every page footer: Stephen's name | phone | email (centered, all pages)
+  - Page 1 header:    Foxtrot Aviation logo (centered, page 1 only)
+  - Every page header (small, top-right): "Foxtrot Aviation Services /
+                                           Duncan Aviation PVU / MM/DD/YYYY"
+  - Every page footer (centered):  Stephen's name | phone | email
   - Body: aircraft header, Stephen's intro, three supersections
 
 Services are organized into three supersections:
@@ -14,11 +16,15 @@ Services are organized into three supersections:
   2. Paint Correction & Coatings    — Ceramic Coating, Permagard, Polymer
   3. Detail Work                    — Interior Detail, Exterior Detail, Carpet Extraction
 
+Note: Xylon's AI observation and field notes appear BEFORE the Brightwork
+example (before/after) photos, because the marketing photos show a plane that
+received both services together.
+
 Requirements:
     pip install reportlab pillow requests anthropic numpy
 
 Place in the same repo directory:
-    logo.png            — Foxtrot Aviation logo (white or transparent background)
+    logo.png            — Foxtrot Aviation logo
     service_context.md  — Service knowledge base for the AI rewriter
 """
 
@@ -27,6 +33,7 @@ import io
 import os
 import requests
 import anthropic
+from datetime import date
 from PIL import Image
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -46,15 +53,14 @@ PAGE_W, PAGE_H = letter
 MARGIN         = 0.75 * inch
 CONTENT_W      = PAGE_W - 2 * MARGIN
 
-# Logo dimensions on page 1 (preserve 2.2:1 aspect ratio)
+# Logo on page 1 (2816×1270 → 2.2:1 aspect)
 LOGO_W         = 3.0 * inch
 LOGO_H         = LOGO_W / 2.216          # ~1.35 inch
+HEADER_HEIGHT  = LOGO_H + 0.25 * inch   # space reserved at top of page 1
 
-# Header height reserved on page 1 (logo + a little breathing room)
-HEADER_HEIGHT  = LOGO_H + 0.25 * inch
-
-# Footer height reserved on every page
+# Footer and small header heights reserved every page
 FOOTER_HEIGHT  = 0.45 * inch
+SMALL_HDR_H    = 0.35 * inch
 
 # ─────────────────────────────────────────────────────────────
 # SUPERSECTION STRUCTURE
@@ -97,6 +103,15 @@ SUPERSECTIONS = [
 ]
 
 # ─────────────────────────────────────────────────────────────
+# Services whose example (before/after) photos are shared with
+# the PREVIOUS service in the same supersection.
+# Xylon's example photos are Brightwork's photos (same job).
+# ─────────────────────────────────────────────────────────────
+DEFER_EXAMPLE_PHOTOS_TO = {
+    "Xylon": "Brightwork",   # Xylon text appears first; photos render under Brightwork
+}
+
+# ─────────────────────────────────────────────────────────────
 # CONFIG — toggle before/after marketing photos per service
 # ─────────────────────────────────────────────────────────────
 INCLUDE_EXAMPLE_PHOTOS = {
@@ -107,7 +122,7 @@ INCLUDE_EXAMPLE_PHOTOS = {
     "Interior Detail":   False,
     "Exterior Detail":   True,
     "Carpet Extraction": True,
-    "Xylon":             False,
+    "Xylon":             False,   # Xylon shares Brightwork's photos — handled via deferral
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -124,7 +139,7 @@ EXAMPLE_PHOTO_NAMES = {
     "Interior Detail":   None,
     "Exterior Detail":   None,
     "Carpet Extraction": ("Carpet Extraction Before.jpg", "Carpet Extraction After.jpg"),
-    "Xylon":             ("Xylon Before.jpg",             "Xylon After.jpg"),
+    "Xylon":             None,
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -177,7 +192,7 @@ SERVICE_BOILERPLATE = {
 # ─────────────────────────────────────────────────────────────
 STEPHEN_NAME  = "Stephen Chadbourn"
 STEPHEN_PHONE = "520.981.8942"
-STEPHEN_EMAIL = "stephen.Chadbourn@FoxtrotAviation.com"
+STEPHEN_EMAIL = "stephen.chadbourn@foxtrotaviation.com"
 
 STEPHEN_INTRO = (
     "Hello, I'm Stephen Chadbourn, General Manager of the Foxtrot Aviation team at "
@@ -205,12 +220,11 @@ SERVICE_CONTEXT = _load_service_context()
 # ─────────────────────────────────────────────────────────────
 def _find_logo() -> str | None:
     here = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
+    for p in [
         os.path.join(here, "logo.png"),
         "/mnt/user-data/uploads/logo.png",
         "/mnt/project/Fox_Logo_Red_background.png",
-    ]
-    for p in candidates:
+    ]:
         if os.path.exists(p):
             return p
     return None
@@ -219,25 +233,44 @@ LOGO_PATH = _find_logo()
 
 
 # ─────────────────────────────────────────────────────────────
-# Canvas callbacks — header (page 1 only) + footer (all pages)
+# Canvas callbacks — logo header (page 1), small info header
+# (all pages), and footer (all pages)
 # ─────────────────────────────────────────────────────────────
+def _draw_small_header(c: rl_canvas.Canvas) -> None:
+    """
+    Small right-aligned header on every page:
+        Foxtrot Aviation Services   Duncan Aviation PVU   MM/DD/YYYY
+    """
+    today     = date.today().strftime("%m/%d/%Y")
+    hdr_text  = f"Foxtrot Aviation Services   |   Duncan Aviation PVU   |   {today}"
+    c.saveState()
+    c.setFont("Helvetica", 7.5)
+    c.setFillColor(colors.HexColor("#777777"))
+    y = PAGE_H - MARGIN * 0.55
+    c.drawRightString(PAGE_W - MARGIN, y, hdr_text)
+    # Thin rule underneath
+    c.setStrokeColor(colors.HexColor("#dddddd"))
+    c.setLineWidth(0.3)
+    c.line(MARGIN, y - 4, PAGE_W - MARGIN, y - 4)
+    c.restoreState()
+
+
 def _draw_footer(c: rl_canvas.Canvas) -> None:
-    """Draw Stephen's contact line centered at the bottom of the page."""
+    """Centered footer on every page: Name  |  Phone  |  Email"""
     footer_text = f"{STEPHEN_NAME}   |   {STEPHEN_PHONE}   |   {STEPHEN_EMAIL}"
     c.saveState()
     c.setFont("Helvetica", 8)
     c.setFillColor(colors.HexColor("#555555"))
-    # Thin rule just above the text
+    rule_y = MARGIN * 0.55
     c.setStrokeColor(colors.HexColor("#cccccc"))
     c.setLineWidth(0.4)
-    rule_y = MARGIN * 0.55
     c.line(MARGIN, rule_y + 10, PAGE_W - MARGIN, rule_y + 10)
     c.drawCentredString(PAGE_W / 2, rule_y - 2, footer_text)
     c.restoreState()
 
 
 def _draw_logo_header(c: rl_canvas.Canvas) -> None:
-    """Draw the logo centered at the top of page 1."""
+    """Centered logo at top of page 1 only."""
     if not LOGO_PATH:
         return
     x = (PAGE_W - LOGO_W) / 2
@@ -252,10 +285,12 @@ def _draw_logo_header(c: rl_canvas.Canvas) -> None:
 
 def on_first_page(c: rl_canvas.Canvas, doc) -> None:
     _draw_logo_header(c)
+    _draw_small_header(c)
     _draw_footer(c)
 
 
 def on_later_pages(c: rl_canvas.Canvas, doc) -> None:
+    _draw_small_header(c)
     _draw_footer(c)
 
 
@@ -295,10 +330,10 @@ def rewrite_notes(raw_notes: str, service_name: str, condition_photos: list) -> 
             f"\"\"\"\n{boilerplate}\n\"\"\"\n\n"
             f"Do NOT repeat, paraphrase, or restate anything already covered above.\n\n"
         )
-    if raw_notes:
-        instruction += f"Stephen's raw field note: \"{raw_notes}\"\n\n"
-    else:
-        instruction += "No field note provided. Write based on the photos.\n\n"
+    instruction += (
+        f"Stephen's raw field note: \"{raw_notes}\"\n\n" if raw_notes
+        else "No field note provided. Write based on the photos.\n\n"
+    )
     if condition_photos:
         instruction += (
             f"The following {min(len(condition_photos), 3)} photo(s) show the actual "
@@ -322,9 +357,9 @@ def rewrite_notes(raw_notes: str, service_name: str, condition_photos: list) -> 
     try:
         client = anthropic.Anthropic()
         kwargs = {
-            "model":    "claude-sonnet-4-6",
+            "model":      "claude-sonnet-4-6",
             "max_tokens": 400,
-            "messages": [{"role": "user", "content": content}],
+            "messages":   [{"role": "user", "content": content}],
         }
         if SERVICE_CONTEXT:
             kwargs["system"] = (
@@ -385,7 +420,7 @@ def build_condition_photo_block(pil_images: list) -> list:
         rows.append([left, right])
     tbl = Table(rows, colWidths=[col_w, col_w])
     tbl.setStyle(TableStyle([
-        ("VALIGN", (0,0),(-1,-1),"TOP"),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
         ("LEFTPADDING",(0,0),(-1,-1),3), ("RIGHTPADDING",(0,0),(-1,-1),3),
         ("TOPPADDING",(0,0),(-1,-1),3),  ("BOTTOMPADDING",(0,0),(-1,-1),3),
     ]))
@@ -404,9 +439,9 @@ def build_example_photo_block(before_img, after_img) -> list:
     def cell(img, label):
         if img is None:
             return ""
-        return [pil_to_rl(img, col_w, 2.5*inch), Paragraph(f"<b>{label}</b>", label_s)]
+        return [pil_to_rl(img, col_w, 2.5 * inch), Paragraph(f"<b>{label}</b>", label_s)]
 
-    tbl = Table([[cell(before_img,"BEFORE"), cell(after_img,"AFTER")]],
+    tbl = Table([[cell(before_img, "BEFORE"), cell(after_img, "AFTER")]],
                 colWidths=[col_w, col_w])
     tbl.setStyle(TableStyle([
         ("VALIGN",(0,0),(-1,-1),"TOP"), ("ALIGN",(0,0),(-1,-1),"CENTER"),
@@ -420,7 +455,7 @@ def build_example_photo_block(before_img, after_img) -> list:
 # Main PDF generator
 # ─────────────────────────────────────────────────────────────
 def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") -> str:
-    styles  = getSampleStyleSheet()
+    styles    = getSampleStyleSheet()
     title_s   = ParagraphStyle("title_s", parent=styles["Normal"],
                                fontSize=12, leading=16, spaceAfter=2,
                                fontName="Helvetica-Bold")
@@ -436,7 +471,7 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
 
     story = []
 
-    # ── Spacer to clear the logo on page 1 ───────────────────
+    # Reserve space for logo on page 1
     story.append(Spacer(1, HEADER_HEIGHT))
 
     # ── Aircraft header ───────────────────────────────────────
@@ -451,9 +486,10 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
     story.append(Paragraph(STEPHEN_INTRO, body_s))
     story.append(Spacer(1, 8))
 
-    # ── Supersections ────────────────────────────────────────
+    # ── Build upsell lookup ───────────────────────────────────
     upsell_map = {u["service"]: u for u in data.get("upsells", [])}
 
+    # ── Supersections ─────────────────────────────────────────
     for section in SUPERSECTIONS:
         section_upsells = [upsell_map[s] for s in section["services"] if s in upsell_map]
         if not section_upsells:
@@ -466,6 +502,15 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
             story.append(Paragraph(section["boilerplate"], body_s))
         story.append(Spacer(1, 6))
 
+        # ── Pass 1: render all service text blocks (boilerplate,
+        #           AI notes, condition photos) for every service
+        #           in this section, in order. No example photos yet.
+        # ── Pass 2: after all text is done, append example photos
+        #           once per unique photo set (handles Brightwork/Xylon
+        #           sharing the same before/after images).
+        # ─────────────────────────────────────────────────────
+
+        # Pass 1 — text + condition photos
         for upsell in section_upsells:
             service = upsell["service"]
             price   = upsell.get("price", "")
@@ -491,25 +536,42 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
             if photos:
                 story.extend(build_condition_photo_block(photos))
 
-            if INCLUDE_EXAMPLE_PHOTOS.get(service, False):
-                photo_names = EXAMPLE_PHOTO_NAMES.get(service)
-                if photo_names:
-                    before_name, after_name = photo_names
-                    print(f"  Fetching example photos for {service}...")
-                    before_img = fetch_sharepoint_photo(graph_token, before_name)
-                    after_img  = fetch_sharepoint_photo(graph_token, after_name)
-                    story.extend(build_example_photo_block(before_img, after_img))
-
             story.append(Spacer(1, 6))
 
-    # ── Build PDF with header/footer callbacks ────────────────
+        # Pass 2 — example (before/after) photos, deduplicated
+        # Build a list of unique photo sets to render, resolving
+        # DEFER_EXAMPLE_PHOTOS_TO so shared sets appear only once.
+        rendered_photo_keys: set[str] = set()
+        for upsell in section_upsells:
+            service = upsell["service"]
+
+            # Resolve which service's photo set to use
+            photo_key = DEFER_EXAMPLE_PHOTOS_TO.get(service, service)
+
+            if photo_key in rendered_photo_keys:
+                continue
+            if not INCLUDE_EXAMPLE_PHOTOS.get(photo_key, False):
+                continue
+
+            photo_names = EXAMPLE_PHOTO_NAMES.get(photo_key)
+            if not photo_names:
+                continue
+
+            before_name, after_name = photo_names
+            print(f"  Fetching example photos for {photo_key}...")
+            before_img = fetch_sharepoint_photo(graph_token, before_name)
+            after_img  = fetch_sharepoint_photo(graph_token, after_name)
+            story.extend(build_example_photo_block(before_img, after_img))
+            rendered_photo_keys.add(photo_key)
+
+    # ── Build PDF ─────────────────────────────────────────────
     doc = SimpleDocTemplate(
         output_path,
         pagesize=letter,
         leftMargin=MARGIN,
         rightMargin=MARGIN,
-        topMargin=MARGIN,                        # canvas callbacks handle actual header
-        bottomMargin=MARGIN + FOOTER_HEIGHT,     # reserve room for footer
+        topMargin=MARGIN + SMALL_HDR_H,         # room for small header
+        bottomMargin=MARGIN + FOOTER_HEIGHT,    # room for footer
     )
     doc.build(story, onFirstPage=on_first_page, onLaterPages=on_later_pages)
     print(f"\nPDF saved: {output_path}")
@@ -523,9 +585,9 @@ if __name__ == "__main__":
     import numpy as np
     from PIL import Image as PILImage
 
-    def _fake_photo(color=(180,180,200)):
+    def _fake_photo(color=(180, 180, 200)):
         return PILImage.fromarray(
-            __import__("numpy").full((300,400,3), color, dtype=__import__("numpy").uint8)
+            np.full((300, 400, 3), color, dtype=np.uint8)
         )
 
     fake_data = {
@@ -534,20 +596,22 @@ if __name__ == "__main__":
         "indoc_date": "2026-04-17", "rts_date": "2026-04-30",
         "included_services": ["Brightwork"],
         "upsells": [
-            {"service":"Brightwork",     "price":"1800",  "notes":"moderate oxidation on leading edges",
-             "photos":[_fake_photo((210,210,200)), _fake_photo((200,205,210))]},
-            {"service":"Ceramic Coating","price":"26760", "notes":"minor checking on crown",
-             "photos":[_fake_photo((230,225,220))]},
-            {"service":"Interior Detail","price":"850",   "notes":"seats dirty, carpet stained",
-             "photos":[_fake_photo((200,200,220)), _fake_photo((210,190,200))]},
-            {"service":"Carpet Extraction","price":"420", "notes":"heavy traffic wear",
-             "photos":[_fake_photo((190,210,190))]},
+            {"service": "Brightwork",      "price": "1800",  "notes": "moderate oxidation on leading edges",
+             "photos": [_fake_photo((210,210,200)), _fake_photo((200,205,210))]},
+            {"service": "Xylon",           "price": "1200",  "notes": "no current protection on leading edges",
+             "photos": []},
+            {"service": "Ceramic Coating", "price": "26760", "notes": "minor checking on crown",
+             "photos": [_fake_photo((230,225,220))]},
+            {"service": "Interior Detail", "price": "850",   "notes": "seats dirty, carpet stained",
+             "photos": [_fake_photo((200,200,220)), _fake_photo((210,190,200))]},
+            {"service": "Carpet Extraction","price": "420",  "notes": "heavy traffic wear",
+             "photos": [_fake_photo((190,210,190))]},
         ],
     }
 
     import generate_upsell_pdf as _self
     _self.rewrite_notes          = lambda n, s, p: f"[AI: {n or 'visual observation'}]"
-    _self.fetch_sharepoint_photo = lambda t, f: _fake_photo((220,220,180))
+    _self.fetch_sharepoint_photo = lambda t, f: _fake_photo((220, 220, 180))
 
     print("Running smoke test...")
     out = generate_pdf(fake_data, graph_token="FAKE", output_path="/tmp/upsell_test.pdf")
