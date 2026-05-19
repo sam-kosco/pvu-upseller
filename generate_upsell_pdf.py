@@ -1,578 +1,151 @@
 """
-PVU Upsell PDF Generator
-========================
-Takes the structured dict from parse_payload.py and produces a
-polished sales PDF matching the Foxtrot Aviation example document style.
+PVU Upsell Word Document Generator
+====================================
+Generates a .docx version of the upsell proposal alongside the PDF.
+Stephen can open it in Word and make any last-minute edits before
+sending it to the customer.
 
-Layout:
-  - Page 1 header:    Foxtrot Aviation logo (centered, page 1 only)
-  - Every page header (small, top-right): "Foxtrot Aviation Services /
-                                           Duncan Aviation PVU / MM/DD/YYYY"
-  - Every page footer (centered):  Stephen's name | phone | email
-  - Body: aircraft header, Stephen's intro, three supersections
+Content mirrors generate_upsell_pdf.py exactly:
+  - Logo on page 1
+  - Small header (Foxtrot Aviation Services | Duncan Aviation PVU | date) every page
+  - Aircraft info block
+  - Stephen's intro
+  - Three supersections with per-service blocks
+  - Condition photos (from JotForm) with "[Tail] Current Condition" caption
+  - Example photos (from SharePoint) with "[Service] Example Photo" caption
+  - Footer: Stephen's name | phone | email every page
 
-Services are organized into three supersections:
-  1. Metal Polish & Protection      — Brightwork, Xylon
-  2. Paint Correction & Coatings    — Ceramic Coating, Permagard, Polymer
-  3. Detail Work                    — Interior Detail, Exterior Detail, Carpet Extraction
-
-Note: Xylon's AI observation and field notes appear BEFORE the Brightwork
-example (before/after) photos, because the marketing photos show a plane that
-received both services together.
+Usage:
+    from generate_upsell_docx import generate_docx
+    output_path = generate_docx(parsed_data, graph_token, output_path="upsell.docx")
 
 Requirements:
-    pip install reportlab pillow requests anthropic numpy
-
-Place in the same repo directory:
-    logo.png            — Foxtrot Aviation logo
-    service_context.md  — Service knowledge base for the AI rewriter
+    pip install pillow requests
+    npm install -g docx
 """
 
-import base64
 import io
+import json
 import os
-import requests
-import anthropic
+import subprocess
+import tempfile
 from datetime import date
+
+import requests
 from PIL import Image
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.lib import colors
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Image as RLImage,
-    Table, TableStyle, HRFlowable, KeepTogether
+
+# ── Re-use all config from generate_upsell_pdf ─────────────────────────────
+from generate_upsell_pdf import (
+    SUPERSECTIONS,
+    INCLUDE_EXAMPLE_PHOTOS,
+    EXAMPLE_PHOTO_NAMES,
+    SERVICE_BOILERPLATE,
+    DEFER_EXAMPLE_PHOTOS_TO,
+    STEPHEN_NAME,
+    STEPHEN_PHONE,
+    STEPHEN_EMAIL,
+    STEPHEN_INTRO,
+    SERVICE_CONTEXT,
+    DRIVE_ID,
+    EXAMPLE_PHOTO_BASE,
+    rewrite_notes,
+    fetch_sharepoint_photo,
+    _find_logo,
 )
-from reportlab.lib.enums import TA_CENTER
-from reportlab.pdfgen import canvas as rl_canvas
-
-# ─────────────────────────────────────────────────────────────
-# PAGE GEOMETRY
-# ─────────────────────────────────────────────────────────────
-PAGE_W, PAGE_H = letter
-MARGIN         = 0.75 * inch
-CONTENT_W      = PAGE_W - 2 * MARGIN
-
-# Logo on page 1 (2816×1270 → 2.2:1 aspect)
-LOGO_W         = 3.0 * inch
-LOGO_H         = LOGO_W / 2.216          # ~1.35 inch
-HEADER_HEIGHT  = LOGO_H + 0.25 * inch   # space reserved at top of page 1
-
-# Footer and small header heights reserved every page
-FOOTER_HEIGHT  = 0.45 * inch
-SMALL_HDR_H    = 0.35 * inch
-
-# ─────────────────────────────────────────────────────────────
-# SUPERSECTION STRUCTURE
-# ─────────────────────────────────────────────────────────────
-SUPERSECTIONS = [
-    {
-        "title":    "Metal Polish & Protection",
-        "services": ["Brightwork", "Xylon"],
-        "boilerplate": (
-            "Your aircraft's bare metal surfaces — leading edges, nacelles, wing tips, "
-            "and stabilizers — are among the most exposed components on the airframe. "
-            "Regular polishing and protection keeps these surfaces free of oxidation and "
-            "corrosion, preserve their appearance, and can even improve aerodynamic "
-            "performance by maintaining a smooth, laminar surface."
-        ),
-    },
-    {
-        "title":    "Paint Correction & Protective Coatings",
-        "services": ["Ceramic Coating", "Permagard Coating", "Polymer Coating"],
-        "boilerplate": (
-            "Aircraft paint is constantly under attack from UV radiation, exhaust carbon, "
-            "hydraulic fluids, and environmental contaminants. Left unprotected, even "
-            "well-maintained paint oxidizes, becomes porous, and loses its gloss — "
-            "increasing drag and reducing long-term value. The options below represent "
-            "good, better, and best levels of protection, all completable without "
-            "affecting your return-to-service date."
-        ),
-    },
-    {
-        "title":    "Detail Work",
-        "services": ["Interior Detail", "Exterior Detail", "Carpet Extraction"],
-        "boilerplate": (
-            "A thorough detail during your maintenance event is the most cost-effective "
-            "way to protect your aircraft's interior and exterior surfaces between "
-            "major service intervals. Our team is already on-site and familiar with "
-            "your aircraft, making this the ideal time to address accumulated wear "
-            "and restore a like-new appearance inside and out."
-        ),
-    },
-]
-
-# ─────────────────────────────────────────────────────────────
-# Services whose example (before/after) photos are shared with
-# the PREVIOUS service in the same supersection.
-# Xylon's example photos are Brightwork's photos (same job).
-# ─────────────────────────────────────────────────────────────
-DEFER_EXAMPLE_PHOTOS_TO = {
-    "Xylon": "Brightwork",   # Xylon text appears first; photos render under Brightwork
-}
-
-# ─────────────────────────────────────────────────────────────
-# CONFIG — toggle before/after marketing photos per service
-# ─────────────────────────────────────────────────────────────
-INCLUDE_EXAMPLE_PHOTOS = {
-    "Brightwork":        True,
-    "Ceramic Coating":   True,
-    "Permagard Coating": True,
-    "Polymer Coating":   True,
-    "Interior Detail":   False,
-    "Exterior Detail":   True,
-    "Carpet Extraction": True,
-    "Xylon":             False,   # Xylon shares Brightwork's photos — handled via deferral
-}
-
-# ─────────────────────────────────────────────────────────────
-# SharePoint config
-# ─────────────────────────────────────────────────────────────
-DRIVE_ID           = "b!_bzXaIx86kOufgJN3ih-BaDIDthKYuxJkJtLi1Bm5irGjCEnK-VHSpBRRm3_SDKU"
-EXAMPLE_PHOTO_BASE = "Assets/Service Example Photos"
-
-EXAMPLE_PHOTO_NAMES = {
-    "Brightwork":        ("Brightwork Before.jpg",        "Brightwork After.jpg"),
-    "Ceramic Coating":   ("Ceramic Coating Before.jpg",   "Ceramic Coating After.jpg"),
-    "Permagard Coating": ("Permagard Before.jpg",         "Permagard After.jpg"),
-    "Polymer Coating":   ("Polymer Before.jpg",           "Polymer After.jpg"),
-    "Interior Detail":   None,
-    "Exterior Detail":   None,
-    "Carpet Extraction": ("Carpet Extraction Before.jpg", "Carpet Extraction After.jpg"),
-    "Xylon":             None,
-}
-
-# ─────────────────────────────────────────────────────────────
-# Per-service boilerplate — Stephen replaces placeholders
-# ─────────────────────────────────────────────────────────────
-SERVICE_BOILERPLATE = {
-    "Brightwork": (
-        "Brightwork Boilerplate Text — Stephen to provide final copy. "
-        "This section describes the brightwork polishing service, what it addresses, "
-        "and why it is recommended for this aircraft type."
-    ),
-    "Xylon": (
-        "Xylon Boilerplate Text — Stephen to provide final copy. "
-        "This section describes the Xylon corrosion-inhibiting treatment "
-        "and the long-term protection it provides for leading edges."
-    ),
-    "Ceramic Coating": (
-        "Ceramic Coating Boilerplate Text — Stephen to provide final copy. "
-        "This section describes the paint correction and ceramic coating process, "
-        "the 3-year warranty, hydrophobic properties, and performance benefits."
-    ),
-    "Permagard Coating": (
-        "Permagard Boilerplate Text — Stephen to provide final copy. "
-        "This section describes Permagard as the industry standard in paint protection "
-        "and the yearly booster treatment requirement."
-    ),
-    "Polymer Coating": (
-        "Polymer Coating Boilerplate Text — Stephen to provide final copy. "
-        "This section describes the polymer coating option, its protection level, "
-        "and how long it typically lasts."
-    ),
-    "Interior Detail": (
-        "Interior Detail Boilerplate Text — Stephen to provide final copy. "
-        "This section describes the interior detail service including deep cleaning "
-        "of all cabin surfaces, leather, and soft goods."
-    ),
-    "Exterior Detail": (
-        "Exterior Detail Boilerplate Text — Stephen to provide final copy. "
-        "This section describes the exterior detail service and what it covers."
-    ),
-    "Carpet Extraction": (
-        "Carpet Extraction Boilerplate Text — Stephen to provide final copy. "
-        "This section describes carpet extraction, why it is recommended at every "
-        "maintenance event, and what contaminants it removes."
-    ),
-}
-
-# ─────────────────────────────────────────────────────────────
-# Stephen's contact info
-# ─────────────────────────────────────────────────────────────
-STEPHEN_NAME  = "Stephen Chadbourn"
-STEPHEN_PHONE = "520.981.8942"
-STEPHEN_EMAIL = "stephen.chadbourn@foxtrotaviation.com"
-
-STEPHEN_INTRO = (
-    "Hello, I'm Stephen Chadbourn, General Manager of the Foxtrot Aviation team at "
-    "Duncan Aviation in Provo, Utah. We provide aircraft detailing during maintenance "
-    "events and are committed to returning your aircraft in exceptional condition."
-)
-
-# ─────────────────────────────────────────────────────────────
-# Load service_context.md once at module startup
-# ─────────────────────────────────────────────────────────────
-def _load_service_context() -> str:
-    here = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(here, "service_context.md")
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    print("  Warning: service_context.md not found.")
-    return ""
-
-SERVICE_CONTEXT = _load_service_context()
-
-
-# ─────────────────────────────────────────────────────────────
-# Resolve logo path
-# ─────────────────────────────────────────────────────────────
-def _find_logo() -> str | None:
-    here = os.path.dirname(os.path.abspath(__file__))
-    for p in [
-        os.path.join(here, "logo.png"),
-        "/mnt/user-data/uploads/logo.png",
-        "/mnt/project/Fox_Logo_Red_background.png",
-    ]:
-        if os.path.exists(p):
-            return p
-    return None
 
 LOGO_PATH = _find_logo()
 
 
-# ─────────────────────────────────────────────────────────────
-# Canvas callbacks — logo header (page 1), small info header
-# (all pages), and footer (all pages)
-# ─────────────────────────────────────────────────────────────
-def _draw_small_header(c: rl_canvas.Canvas) -> None:
+# ─────────────────────────────────────────────────────────────────────────────
+# PIL image → temp JPEG path (docx-js needs a file path, not bytes)
+# ─────────────────────────────────────────────────────────────────────────────
+def _save_temp_image(pil_img: Image.Image, suffix: str = ".jpg") -> str:
+    """Save a PIL image to a temp file and return the path."""
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    pil_img.convert("RGB").save(tmp.name, "JPEG", quality=85)
+    tmp.close()
+    return tmp.name
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Build the JS data payload for the docx-js script
+# ─────────────────────────────────────────────────────────────────────────────
+def _build_doc_data(data: dict, graph_token: str) -> dict:
     """
-    Small right-aligned header on every page:
-        Foxtrot Aviation Services   Duncan Aviation PVU   MM/DD/YYYY
+    Collect all content into a plain Python dict that gets JSON-serialised
+    and passed to the Node.js docx-builder script.
+
+    Images are saved to temp files; the dict carries their paths.
     """
     today     = date.today().strftime("%m/%d/%Y")
-    hdr_text  = f"Foxtrot Aviation Services   |   Duncan Aviation PVU   |   {today}"
-    c.saveState()
-    c.setFont("Helvetica", 7.5)
-    c.setFillColor(colors.HexColor("#777777"))
-    y = PAGE_H - MARGIN * 0.55
-    c.drawRightString(PAGE_W - MARGIN, y, hdr_text)
-    # Thin rule underneath
-    c.setStrokeColor(colors.HexColor("#dddddd"))
-    c.setLineWidth(0.3)
-    c.line(MARGIN, y - 4, PAGE_W - MARGIN, y - 4)
-    c.restoreState()
+    tail      = data.get("tail", "")
+    owner     = data.get("owner", "").strip() or data.get("customer", "").strip()
+    make_model = " ".join(filter(None, [data.get("make", ""), data.get("model", "")]))
 
-
-def _draw_footer(c: rl_canvas.Canvas) -> None:
-    """Centered footer on every page: Name  |  Phone  |  Email"""
-    footer_text = f"{STEPHEN_NAME}   |   {STEPHEN_PHONE}   |   {STEPHEN_EMAIL}"
-    c.saveState()
-    c.setFont("Helvetica", 8)
-    c.setFillColor(colors.HexColor("#555555"))
-    rule_y = MARGIN * 0.55
-    c.setStrokeColor(colors.HexColor("#cccccc"))
-    c.setLineWidth(0.4)
-    c.line(MARGIN, rule_y + 10, PAGE_W - MARGIN, rule_y + 10)
-    c.drawCentredString(PAGE_W / 2, rule_y - 2, footer_text)
-    c.restoreState()
-
-
-def _draw_logo_header(c: rl_canvas.Canvas) -> None:
-    """Centered logo at top of page 1 only."""
-    if not LOGO_PATH:
-        return
-    x = (PAGE_W - LOGO_W) / 2
-    y = PAGE_H - MARGIN - LOGO_H
-    c.drawImage(
-        LOGO_PATH, x, y,
-        width=LOGO_W, height=LOGO_H,
-        preserveAspectRatio=True,
-        mask="auto",
-    )
-
-
-def on_first_page(c: rl_canvas.Canvas, doc) -> None:
-    _draw_logo_header(c)
-    _draw_small_header(c)
-    _draw_footer(c)
-
-
-def on_later_pages(c: rl_canvas.Canvas, doc) -> None:
-    _draw_small_header(c)
-    _draw_footer(c)
-
-
-# ─────────────────────────────────────────────────────────────
-# PIL Image -> base64 JPEG (for Claude vision API)
-# ─────────────────────────────────────────────────────────────
-def _pil_to_b64(pil_img: Image.Image, max_px: int = 1024) -> str:
-    img = pil_img.convert("RGB")
-    w, h = img.size
-    if max(w, h) > max_px:
-        scale = max_px / max(w, h)
-        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=75)
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-
-# ─────────────────────────────────────────────────────────────
-# AI note rewriter
-# ─────────────────────────────────────────────────────────────
-def rewrite_notes(raw_notes: str, service_name: str, condition_photos: list) -> str:
-    if not raw_notes and not condition_photos:
-        return ""
-
-    boilerplate = SERVICE_BOILERPLATE.get(service_name, "")
-    boilerplate_is_placeholder = boilerplate.startswith(service_name + " Boilerplate Text")
-
-    content = []
-    instruction = (
-        f"You are writing one paragraph for a professional aircraft detailing proposal "
-        f"sent by Foxtrot Aviation to an aircraft owner or operator.\n\n"
-        f"SERVICE: {service_name}\n\n"
-    )
-    if boilerplate and not boilerplate_is_placeholder:
-        instruction += (
-            f"The proposal already contains this boilerplate paragraph:\n"
-            f"\"\"\"\n{boilerplate}\n\"\"\"\n\n"
-            f"Do NOT repeat, paraphrase, or restate anything already covered above.\n\n"
-        )
-    instruction += (
-        f"Stephen's raw field note: \"{raw_notes}\"\n\n" if raw_notes
-        else "No field note provided. Write based on the photos.\n\n"
-    )
-    if condition_photos:
-        instruction += (
-            f"The following {min(len(condition_photos), 3)} photo(s) show the actual "
-            f"condition of this aircraft. Use what you see.\n\n"
-        )
-    instruction += (
-        "Write 2-3 sentences: warm, professional, client-facing. Describe the specific "
-        "condition observed and why the service is recommended. No heading, no preamble."
-    )
-    content.append({"type": "text", "text": instruction})
-    for photo in condition_photos[:3]:
-        try:
-            content.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": "image/jpeg",
-                           "data": _pil_to_b64(photo)},
-            })
-        except Exception as e:
-            print(f"  Warning: could not encode photo for {service_name}: {e}")
-
-    try:
-        client = anthropic.Anthropic()
-        kwargs = {
-            "model":      "claude-sonnet-4-6",
-            "max_tokens": 400,
-            "messages":   [{"role": "user", "content": content}],
-        }
-        if SERVICE_CONTEXT:
-            kwargs["system"] = (
-                "You are an expert aviation detailing specialist writing professional "
-                "client-facing proposals for Foxtrot Aviation Services. Use the following "
-                "knowledge base but write specifically about the aircraft at hand.\n\n"
-                + SERVICE_CONTEXT
-            )
-        return client.messages.create(**kwargs).content[0].text.strip()
-    except Exception as e:
-        print(f"  Warning: AI rewrite failed for {service_name}: {e}")
-        return raw_notes
-
-
-# ─────────────────────────────────────────────────────────────
-# SharePoint photo fetcher
-# ─────────────────────────────────────────────────────────────
-def fetch_sharepoint_photo(graph_token: str, filename: str) -> Image.Image | None:
-    path = f"{EXAMPLE_PHOTO_BASE}/{filename}"
-    url  = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{path}:/content"
-    try:
-        resp = requests.get(url, headers={"Authorization": f"Bearer {graph_token}"},
-                            timeout=30)
-        if resp.status_code == 200:
-            return Image.open(io.BytesIO(resp.content))
-        print(f"  Warning: could not fetch {filename} (HTTP {resp.status_code})")
-    except Exception as e:
-        print(f"  Warning: error fetching {filename}: {e}")
-    return None
-
-
-# ─────────────────────────────────────────────────────────────
-# PIL -> ReportLab image helper
-# ─────────────────────────────────────────────────────────────
-def pil_to_rl(pil_img: Image.Image, max_width: float, max_height: float) -> RLImage:
-    buf = io.BytesIO()
-    pil_img.convert("RGB").save(buf, format="JPEG", quality=85)
-    buf.seek(0)
-    w, h  = pil_img.size
-    scale = min(max_width / w, max_height / h, 1.0)
-    return RLImage(buf, width=w * scale, height=h * scale)
-
-
-# ─────────────────────────────────────────────────────────────
-# Photo block builders
-# ─────────────────────────────────────────────────────────────
-def build_condition_photo_block(pil_images: list, tail: str = "") -> list:
-    if not pil_images:
-        return []
-    styles    = getSampleStyleSheet()
-    caption_s = ParagraphStyle("caption_c", parent=styles["Normal"],
-                               fontSize=8, fontName="Helvetica-Bold",
-                               alignment=TA_CENTER,
-                               textColor=colors.HexColor("#333333"),
-                               spaceAfter=3)
-    label_text = f"{tail} Current Condition" if tail else "Current Condition"
-    n = len(pil_images)
-    if n == 1:
-        return [
-            KeepTogether([
-                Paragraph(label_text, caption_s),
-                pil_to_rl(pil_images[0], CONTENT_W, 3.5 * inch),
-            ]),
-            Spacer(1, 8),
-        ]
-    col_w = (CONTENT_W - 6) / 2
-    rows  = []
-    for i in range(0, n, 2):
-        left  = pil_to_rl(pil_images[i],     col_w, 2.5 * inch)
-        right = pil_to_rl(pil_images[i + 1], col_w, 2.5 * inch) if i + 1 < n else ""
-        rows.append([left, right])
-    tbl = Table(rows, colWidths=[col_w, col_w])
-    tbl.setStyle(TableStyle([
-        ("VALIGN",(0,0),(-1,-1),"TOP"),
-        ("LEFTPADDING",(0,0),(-1,-1),3), ("RIGHTPADDING",(0,0),(-1,-1),3),
-        ("TOPPADDING",(0,0),(-1,-1),3),  ("BOTTOMPADDING",(0,0),(-1,-1),3),
-    ]))
-    return [KeepTogether([Paragraph(label_text, caption_s), tbl]), Spacer(1, 8)]
-
-
-def build_example_photo_block(before_img, after_img, label: str = "Service Example Photo") -> list:
-    if before_img is None and after_img is None:
-        return []
-    styles    = getSampleStyleSheet()
-    caption_s = ParagraphStyle("caption_e", parent=styles["Normal"],
-                               fontSize=8, fontName="Helvetica-Bold",
-                               alignment=TA_CENTER,
-                               textColor=colors.HexColor("#333333"),
-                               spaceAfter=3)
-    label_s   = ParagraphStyle("label", parent=styles["Normal"],
-                               fontSize=9, alignment=TA_CENTER,
-                               textColor=colors.HexColor("#444444"))
-    col_w = (CONTENT_W - 6) / 2
-
-    def cell(img, before_after):
-        if img is None:
-            return ""
-        return [pil_to_rl(img, col_w, 2.5 * inch), Paragraph(f"<b>{before_after}</b>", label_s)]
-
-    tbl = Table([[cell(before_img, "BEFORE"), cell(after_img, "AFTER")]],
-                colWidths=[col_w, col_w])
-    tbl.setStyle(TableStyle([
-        ("VALIGN",(0,0),(-1,-1),"TOP"), ("ALIGN",(0,0),(-1,-1),"CENTER"),
-        ("LEFTPADDING",(0,0),(-1,-1),3), ("RIGHTPADDING",(0,0),(-1,-1),3),
-        ("TOPPADDING",(0,0),(-1,-1),3),  ("BOTTOMPADDING",(0,0),(-1,-1),3),
-    ]))
-    return [
-        KeepTogether([
-            Paragraph(label, caption_s),
-            tbl,
-        ]),
-        Spacer(1, 8),
-    ]
-
-
-# ─────────────────────────────────────────────────────────────
-# Main PDF generator
-# ─────────────────────────────────────────────────────────────
-def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") -> str:
-    styles    = getSampleStyleSheet()
-    title_s   = ParagraphStyle("title_s", parent=styles["Normal"],
-                               fontSize=12, leading=16, spaceAfter=2,
-                               fontName="Helvetica-Bold")
-    body_s    = ParagraphStyle("body_s", parent=styles["Normal"],
-                               fontSize=10, leading=14, spaceAfter=6)
-    super_s   = ParagraphStyle("super_s", parent=styles["Normal"],
-                               fontSize=13, leading=17, spaceAfter=4,
-                               fontName="Helvetica-Bold",
-                               textColor=colors.HexColor("#1a1a1a"))
-    service_s = ParagraphStyle("service_s", parent=styles["Normal"],
-                               fontSize=11, leading=14, spaceAfter=4,
-                               fontName="Helvetica-Bold")
-
-    story = []
-
-    # Reserve space for logo on page 1
-    story.append(Spacer(1, HEADER_HEIGHT))
-
-    # ── Aircraft header ───────────────────────────────────────
-    make_model = " ".join(filter(None, [data.get("make",""), data.get("model","")]))
-    # q54 = owner name (new field); q8 = customer/operator (fallback)
-    owner = data.get("owner", "").strip() or data.get("customer", "").strip()
-    story.append(Paragraph(f"<b>Tail:</b> {data.get('tail','')}", title_s))
-    if make_model:
-        story.append(Paragraph(f"<b>Model:</b> {make_model}", title_s))
-    if owner:
-        story.append(Paragraph(f"<b>Owner:</b> {owner}", title_s))
-    story.append(Spacer(1, 10))
-
-    # ── Stephen's intro ───────────────────────────────────────
-    story.append(Paragraph(STEPHEN_INTRO, body_s))
-    story.append(Spacer(1, 8))
-
-    # ── Build upsell lookup ───────────────────────────────────
     upsell_map = {u["service"]: u for u in data.get("upsells", [])}
 
-    # ── Supersections ─────────────────────────────────────────
+    doc_data = {
+        "today":       today,
+        "tail":        tail,
+        "makeModel":   make_model,
+        "owner":       owner,
+        "intro":       STEPHEN_INTRO,
+        "footerName":  STEPHEN_NAME,
+        "footerPhone": STEPHEN_PHONE,
+        "footerEmail": STEPHEN_EMAIL,
+        "logoPath":    LOGO_PATH or "",
+        "sections":    [],
+        "tempFiles":   [],   # collect for cleanup
+    }
+
     for section in SUPERSECTIONS:
         section_upsells = [upsell_map[s] for s in section["services"] if s in upsell_map]
         if not section_upsells:
             continue
 
-        story.append(HRFlowable(width="100%", thickness=1.0,
-                                color=colors.HexColor("#888888"), spaceAfter=6))
-        story.append(Paragraph(section["title"], super_s))
-        if section["boilerplate"]:
-            story.append(Paragraph(section["boilerplate"], body_s))
-        story.append(Spacer(1, 6))
+        sec = {
+            "title":      section["title"],
+            "boilerplate": section["boilerplate"],
+            "services":   [],
+        }
 
-        # ── Pass 1: render all service text blocks (boilerplate,
-        #           AI notes, condition photos) for every service
-        #           in this section, in order. No example photos yet.
-        # ── Pass 2: after all text is done, append example photos
-        #           once per unique photo set (handles Brightwork/Xylon
-        #           sharing the same before/after images).
-        # ─────────────────────────────────────────────────────
-
-        # Pass 1 — text + condition photos
+        # ── Pass 1: service text blocks + condition photos ────────────────
         for upsell in section_upsells:
             service = upsell["service"]
             price   = upsell.get("price", "")
             notes   = upsell.get("notes", "")
-            photos  = upsell.get("photos", [])
+            photos  = upsell.get("photos", [])   # PIL Images
 
-            story.append(HRFlowable(width="100%", thickness=0.4,
-                                    color=colors.HexColor("#cccccc"), spaceAfter=4))
-            price_str = f": ${price}" if price else ""
-            story.append(Paragraph(f"{service}{price_str}", service_s))
-
-            svc_boilerplate = SERVICE_BOILERPLATE.get(service, "")
-            if svc_boilerplate:
-                story.append(Paragraph(svc_boilerplate, body_s))
-
+            # AI rewrite
+            polished = ""
             if notes or photos:
-                print(f"  Rewriting notes for {service} "
+                print(f"  [docx] Rewriting notes for {service} "
                       f"({'with' if photos else 'without'} photos)...")
                 polished = rewrite_notes(notes, service, photos)
-                if polished:
-                    story.append(Paragraph(polished, body_s))
 
-            if photos:
-                story.extend(build_condition_photo_block(photos, tail=data.get("tail", "")))
+            # Save condition photos to temp files
+            condition_photo_paths = []
+            for img in photos:
+                p = _save_temp_image(img)
+                condition_photo_paths.append(p)
+                doc_data["tempFiles"].append(p)
 
-            story.append(Spacer(1, 6))
+            svc_data = {
+                "name":              service,
+                "price":             price,
+                "boilerplate":       SERVICE_BOILERPLATE.get(service, ""),
+                "polishedNotes":     polished,
+                "conditionPhotos":   condition_photo_paths,
+                "conditionCaption":  f"{tail} Current Condition" if tail else "Current Condition",
+                "examplePhotos":     [],   # filled in pass 2
+                "exampleCaption":    "",
+            }
+            sec["services"].append(svc_data)
 
-        # Pass 2 — example (before/after) photos, deduplicated
-        # Build a list of unique photo sets to render, resolving
-        # DEFER_EXAMPLE_PHOTOS_TO so shared sets appear only once.
-        rendered_photo_keys: set[str] = set()
-        for upsell in section_upsells:
-            service = upsell["service"]
-
-            # Resolve which service's photo set to use
+        # ── Pass 2: example photos after all text ─────────────────────────
+        rendered_photo_keys: set = set()
+        for i, upsell in enumerate(section_upsells):
+            service   = upsell["service"]
             photo_key = DEFER_EXAMPLE_PHOTOS_TO.get(service, service)
 
             if photo_key in rendered_photo_keys:
@@ -585,67 +158,364 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
                 continue
 
             before_name, after_name = photo_names
-            print(f"  Fetching example photos for {photo_key}...")
+            print(f"  [docx] Fetching example photos for {photo_key}...")
             before_img = fetch_sharepoint_photo(graph_token, before_name)
             after_img  = fetch_sharepoint_photo(graph_token, after_name)
-            # Build label: include any services sharing this photo set
+
+            before_path = _save_temp_image(before_img) if before_img else ""
+            after_path  = _save_temp_image(after_img)  if after_img  else ""
+            if before_path:
+                doc_data["tempFiles"].append(before_path)
+            if after_path:
+                doc_data["tempFiles"].append(after_path)
+
+            # Build label same as PDF
             sharers = [photo_key] + [
                 svc for svc, donor in DEFER_EXAMPLE_PHOTOS_TO.items()
                 if donor == photo_key and svc in upsell_map
             ]
             example_label = " and ".join(sharers) + " Example Photo"
-            story.extend(build_example_photo_block(before_img, after_img, label=example_label))
+
+            # Attach to the LAST service in this section (renders after all text)
+            sec["services"][-1]["examplePhotos"] = [before_path, after_path]
+            sec["services"][-1]["exampleCaption"] = example_label
             rendered_photo_keys.add(photo_key)
 
-    # ── Build PDF ─────────────────────────────────────────────
-    doc = SimpleDocTemplate(
-        output_path,
-        pagesize=letter,
-        leftMargin=MARGIN,
-        rightMargin=MARGIN,
-        topMargin=MARGIN + SMALL_HDR_H,         # room for small header
-        bottomMargin=MARGIN + FOOTER_HEIGHT,    # room for footer
-    )
-    doc.build(story, onFirstPage=on_first_page, onLaterPages=on_later_pages)
-    print(f"\nPDF saved: {output_path}")
-    return os.path.abspath(output_path)
+        doc_data["sections"].append(sec)
+
+    return doc_data
 
 
-# ─────────────────────────────────────────────────────────────
-# Smoke test
-# ─────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    import numpy as np
-    from PIL import Image as PILImage
+# ─────────────────────────────────────────────────────────────────────────────
+# Node.js docx builder script
+# ─────────────────────────────────────────────────────────────────────────────
+DOCX_BUILDER_JS = r"""
+const fs   = require('fs');
+const path = require('path');
+const {
+  Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
+  ImageRun, Header, Footer, AlignmentType, HeadingLevel, BorderStyle,
+  WidthType, VerticalAlign, PageNumber, ShadingType,
+} = require('docx');
 
-    def _fake_photo(color=(180, 180, 200)):
-        return PILImage.fromarray(
-            np.full((300, 400, 3), color, dtype=np.uint8)
-        )
+const data       = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const outputPath = process.argv[3];
 
-    fake_data = {
-        "tail": "N253SY", "make": "Cessna", "model": "Citation X",
-        "customer": "Duncan Aviation",
-        "indoc_date": "2026-04-17", "rts_date": "2026-04-30",
-        "included_services": ["Brightwork"],
-        "upsells": [
-            {"service": "Brightwork",      "price": "1800",  "notes": "moderate oxidation on leading edges",
-             "photos": [_fake_photo((210,210,200)), _fake_photo((200,205,210))]},
-            {"service": "Xylon",           "price": "1200",  "notes": "no current protection on leading edges",
-             "photos": []},
-            {"service": "Ceramic Coating", "price": "26760", "notes": "minor checking on crown",
-             "photos": [_fake_photo((230,225,220))]},
-            {"service": "Interior Detail", "price": "850",   "notes": "seats dirty, carpet stained",
-             "photos": [_fake_photo((200,200,220)), _fake_photo((210,190,200))]},
-            {"service": "Carpet Extraction","price": "420",  "notes": "heavy traffic wear",
-             "photos": [_fake_photo((190,210,190))]},
-        ],
+// ── Helpers ────────────────────────────────────────────────────────────────
+const GRAY    = "555555";
+const DGRAY   = "1a1a1a";
+const LGRAY   = "888888";
+const CAPGRAY = "333333";
+
+// US Letter with 0.75" margins → content width = 12240 - 2*1080 = 10080 DXA
+const MARGIN     = 1080;   // 0.75 inch
+const CONTENT_W  = 10080;  // DXA
+const HALF_W     = 4980;   // ~half minus gutter
+const GUTTER     = 120;
+
+function hRule() {
+  return new Paragraph({
+    border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: LGRAY, space: 1 } },
+    spacing: { after: 80 },
+    children: [],
+  });
+}
+
+function thinRule() {
+  return new Paragraph({
+    border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: "cccccc", space: 1 } },
+    spacing: { after: 60 },
+    children: [],
+  });
+}
+
+function bodyPara(text, opts = {}) {
+  if (!text) return null;
+  return new Paragraph({
+    spacing: { after: 120 },
+    children: [new TextRun({ text, font: "Arial", size: 20,
+      color: opts.color || "000000", bold: opts.bold || false })],
+  });
+}
+
+function captionPara(text) {
+  return new Paragraph({
+    alignment: AlignmentType.CENTER,
+    spacing: { after: 60 },
+    children: [new TextRun({ text, font: "Arial", size: 16,
+      bold: true, color: CAPGRAY })],
+  });
+}
+
+function imageCell(imgPath, label) {
+  const children = [];
+  if (imgPath && fs.existsSync(imgPath)) {
+    const buf  = fs.readFileSync(imgPath);
+    const ext  = path.extname(imgPath).replace('.','').toLowerCase();
+    const type = ext === 'jpg' ? 'jpeg' : ext;
+    // max ~3.3" wide × 2.3" tall in half-column
+    children.push(new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [new ImageRun({
+        data: buf, type,
+        transformation: { width: 310, height: 210 },
+      })],
+    }));
+  }
+  if (label) {
+    children.push(new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [new TextRun({ text: label, font: "Arial",
+        size: 16, bold: true, color: CAPGRAY })],
+    }));
+  }
+  return new TableCell({
+    width: { size: HALF_W, type: WidthType.DXA },
+    margins: { top: 80, bottom: 80, left: GUTTER, right: GUTTER },
+    borders: {
+      top:    { style: BorderStyle.NONE },
+      bottom: { style: BorderStyle.NONE },
+      left:   { style: BorderStyle.NONE },
+      right:  { style: BorderStyle.NONE },
+    },
+    children,
+  });
+}
+
+function photoTable(leftPath, rightPath, leftLabel, rightLabel) {
+  return new Table({
+    width: { size: CONTENT_W, type: WidthType.DXA },
+    columnWidths: [HALF_W, HALF_W],
+    rows: [new TableRow({ children: [
+      imageCell(leftPath,  leftLabel),
+      imageCell(rightPath, rightLabel),
+    ]})],
+  });
+}
+
+function conditionPhotoBlock(paths, caption) {
+  const items = [];
+  if (!paths || paths.length === 0) return items;
+  items.push(captionPara(caption));
+  if (paths.length === 1) {
+    const buf = fs.existsSync(paths[0]) ? fs.readFileSync(paths[0]) : null;
+    if (buf) {
+      const ext  = path.extname(paths[0]).replace('.','').toLowerCase();
+      const type = ext === 'jpg' ? 'jpeg' : ext;
+      items.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 120 },
+        children: [new ImageRun({
+          data: buf, type,
+          transformation: { width: 580, height: 380 },
+        })],
+      }));
+    }
+  } else {
+    // Pair up in rows of 2
+    for (let i = 0; i < paths.length; i += 2) {
+      items.push(photoTable(paths[i], paths[i+1] || '', '', ''));
+      items.push(new Paragraph({ spacing: { after: 60 }, children: [] }));
+    }
+  }
+  return items;
+}
+
+function examplePhotoBlock(paths, caption) {
+  const items = [];
+  if (!paths || paths.filter(Boolean).length === 0) return items;
+  items.push(captionPara(caption));
+  items.push(photoTable(paths[0] || '', paths[1] || '', 'BEFORE', 'AFTER'));
+  items.push(new Paragraph({ spacing: { after: 120 }, children: [] }));
+  return items;
+}
+
+// ── Page header (all pages — logo is in body, not here) ───────────────────
+function makeHeader() {
+  const hdrText = `Foxtrot Aviation Services   |   Duncan Aviation PVU   |   ${data.today}`;
+  return new Header({
+    children: [new Paragraph({
+      alignment: AlignmentType.RIGHT,
+      border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: "dddddd", space: 4 } },
+      spacing: { after: 120 },
+      children: [new TextRun({ text: hdrText, font: "Arial", size: 15, color: "777777" })],
+    })],
+  });
+}
+
+// ── Page footer ────────────────────────────────────────────────────────────
+function makeFooter() {
+  const footerText = `${data.footerName}   |   ${data.footerPhone}   |   ${data.footerEmail}`;
+  return new Footer({
+    children: [new Paragraph({
+      alignment: AlignmentType.CENTER,
+      border: { top: { style: BorderStyle.SINGLE, size: 4, color: "cccccc", space: 4 } },
+      spacing: { before: 80 },
+      children: [new TextRun({ text: footerText, font: "Arial", size: 16, color: GRAY })],
+    })],
+  });
+}
+
+// ── Build body ─────────────────────────────────────────────────────────────
+const body = [];
+
+// Logo — centered at top of document (page 1 body, not header)
+if (data.logoPath && fs.existsSync(data.logoPath)) {
+  const logoBuf = fs.readFileSync(data.logoPath);
+  body.push(new Paragraph({
+    alignment: AlignmentType.CENTER,
+    spacing: { after: 160 },
+    children: [new ImageRun({
+      data: logoBuf, type: 'png',
+      transformation: { width: 252, height: 114 },  // ~1.75" x 0.79"
+    })],
+  }));
+}
+
+// Aircraft header
+const infoLines = [
+  `Tail: ${data.tail}`,
+  data.makeModel ? `Model: ${data.makeModel}` : null,
+  data.owner     ? `Owner: ${data.owner}`     : null,
+].filter(Boolean);
+
+for (const line of infoLines) {
+  body.push(new Paragraph({
+    spacing: { after: 60 },
+    children: [new TextRun({ text: line, font: "Arial", size: 24, bold: true })],
+  }));
+}
+body.push(new Paragraph({ spacing: { after: 160 }, children: [] }));
+body.push(bodyPara(data.intro));
+body.push(new Paragraph({ spacing: { after: 120 }, children: [] }));
+
+// Supersections
+for (const section of data.sections) {
+  body.push(hRule());
+  body.push(new Paragraph({
+    spacing: { after: 80 },
+    children: [new TextRun({ text: section.title, font: "Arial",
+      size: 26, bold: true, color: DGRAY })],
+  }));
+  const bp = bodyPara(section.boilerplate);
+  if (bp) body.push(bp);
+  body.push(new Paragraph({ spacing: { after: 100 }, children: [] }));
+
+  for (const svc of section.services) {
+    body.push(thinRule());
+
+    // Service heading with price
+    const headText = svc.price ? `${svc.name}: $${svc.price}` : svc.name;
+    body.push(new Paragraph({
+      spacing: { after: 80 },
+      children: [new TextRun({ text: headText, font: "Arial", size: 22, bold: true })],
+    }));
+
+    // Per-service boilerplate
+    const sbp = bodyPara(svc.boilerplate);
+    if (sbp) body.push(sbp);
+
+    // AI-rewritten notes
+    const nbp = bodyPara(svc.polishedNotes);
+    if (nbp) body.push(nbp);
+
+    // Condition photos (JotForm)
+    for (const el of conditionPhotoBlock(svc.conditionPhotos, svc.conditionCaption)) {
+      body.push(el);
     }
 
-    import generate_upsell_pdf as _self
-    _self.rewrite_notes          = lambda n, s, p: f"[AI: {n or 'visual observation'}]"
-    _self.fetch_sharepoint_photo = lambda t, f: _fake_photo((220, 220, 180))
+    // Example photos (SharePoint) — after all text
+    for (const el of examplePhotoBlock(svc.examplePhotos, svc.exampleCaption)) {
+      body.push(el);
+    }
 
-    print("Running smoke test...")
-    out = generate_pdf(fake_data, graph_token="FAKE", output_path="/tmp/upsell_test.pdf")
-    print(f"Done -> {out}")
+    body.push(new Paragraph({ spacing: { after: 100 }, children: [] }));
+  }
+}
+
+// ── Assemble document ──────────────────────────────────────────────────────
+const doc = new Document({
+  styles: {
+    default: { document: { run: { font: "Arial", size: 20 } } },
+  },
+  sections: [{
+    properties: {
+      page: {
+        size:   { width: 12240, height: 15840 },
+        margin: { top: MARGIN, right: MARGIN, bottom: MARGIN + 360, left: MARGIN },
+      },
+    },
+    headers: {
+      default: makeHeader(),
+    },
+    footers: {
+      default: makeFooter(),
+    },
+    children: body,
+  }],
+});
+
+Packer.toBuffer(doc).then(buf => {
+  fs.writeFileSync(outputPath, buf);
+  console.log('docx written:', outputPath);
+});
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main entry point
+# ─────────────────────────────────────────────────────────────────────────────
+def generate_docx(data: dict, graph_token: str,
+                  output_path: str = "upsell.docx") -> str:
+    """
+    Generate the upsell Word document.
+
+    Parameters
+    ----------
+    data        : dict from parse_payload.parse_payload()
+    graph_token : valid Microsoft Graph OAuth2 bearer token
+    output_path : where to save the .docx
+
+    Returns
+    -------
+    str : absolute path to the saved .docx
+    """
+    # 1. Build data payload (AI rewrites + photo temp files)
+    doc_data = _build_doc_data(data, graph_token)
+
+    # 2. Write the JS builder script to a temp file
+    js_path   = tempfile.NamedTemporaryFile(delete=False, suffix=".js")
+    js_path.write(DOCX_BUILDER_JS.encode())
+    js_path.close()
+    doc_data["tempFiles"].append(js_path.name)
+
+    # 3. Write the JSON data payload to a temp file
+    json_path = tempfile.NamedTemporaryFile(delete=False, suffix=".json",
+                                            mode="w", encoding="utf-8")
+    # Remove tempFiles list from the JSON (no need to pass it to Node)
+    payload = {k: v for k, v in doc_data.items() if k != "tempFiles"}
+    json.dump(payload, json_path)
+    json_path.close()
+    doc_data["tempFiles"].append(json_path.name)
+
+    # 4. Run the Node.js builder
+    abs_output = os.path.abspath(output_path)
+    try:
+        result = subprocess.run(
+            ["node", js_path.name, json_path.name, abs_output],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"docx builder failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+            )
+        print(f"Docx saved: {abs_output}")
+    finally:
+        # 5. Clean up temp files
+        for p in doc_data["tempFiles"]:
+            try:
+                os.unlink(p)
+            except Exception:
+                pass
+
+    return abs_output
