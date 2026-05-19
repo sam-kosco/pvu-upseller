@@ -113,6 +113,7 @@ without recurring treatments, ceramic is the superior long-term investment.
 **Foxtrot's process:** The aircraft is fully cleaned, decontaminated, and paint-corrected
 as needed before Permagard is applied. All applications are inspected under proper lighting
 (flashlight verification) to ensure even coverage and eliminate swirl marks or high spots.
+Permagard is the industry standard, the warrenty lasts for a year before reapplication is recommended.
 
 ---
 
@@ -131,7 +132,8 @@ are suitable for owners seeking a cost-effective near-term option. They are not 
 for aircraft as a long-term solution.
 
 **Best for:** Owners wanting paint protection and gloss enhancement at a lower price
-point, or as a bridge treatment between major paint events.
+point, or as a bridge treatment between major paint events. Typically lasts 3-6 months depending 
+on hangar time and flight hours
 
 ---
 
