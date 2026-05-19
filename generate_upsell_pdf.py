@@ -72,7 +72,7 @@ SUPERSECTIONS = [
         "boilerplate": (
             "Your aircraft's bare metal surfaces — leading edges, nacelles, wing tips, "
             "and stabilizers — are among the most exposed components on the airframe. "
-            "Regular polishing and protection keep these surfaces free of oxidation and "
+            "Regular polishing and protection keeps these surfaces free of oxidation and "
             "corrosion, preserve their appearance, and can even improve aerodynamic "
             "performance by maintaining a smooth, laminar surface."
         ),
