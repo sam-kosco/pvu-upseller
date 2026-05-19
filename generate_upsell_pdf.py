@@ -177,7 +177,7 @@ SERVICE_BOILERPLATE = {
 # ─────────────────────────────────────────────────────────────
 STEPHEN_NAME  = "Stephen Chadbourn"
 STEPHEN_PHONE = "520.981.8942"
-STEPHEN_EMAIL = "stephen.chadbourn@foxtrotaviation.com"
+STEPHEN_EMAIL = "stephen.Chadbourn@FoxtrotAviation.com"
 
 STEPHEN_INTRO = (
     "Hello, I'm Stephen Chadbourn, General Manager of the Foxtrot Aviation team at "
