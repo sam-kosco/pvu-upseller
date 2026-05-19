@@ -476,10 +476,13 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
 
     # ── Aircraft header ───────────────────────────────────────
     make_model = " ".join(filter(None, [data.get("make",""), data.get("model","")]))
+    # q54 = owner name (new field); q8 = customer/operator (fallback)
+    owner = data.get("owner", "").strip() or data.get("customer", "").strip()
     story.append(Paragraph(f"<b>Tail:</b> {data.get('tail','')}", title_s))
     if make_model:
         story.append(Paragraph(f"<b>Model:</b> {make_model}", title_s))
-    story.append(Paragraph(f"<b>Owner:</b> {data.get('customer','')}", title_s))
+    if owner:
+        story.append(Paragraph(f"<b>Owner:</b> {owner}", title_s))
     story.append(Spacer(1, 10))
 
     # ── Stephen's intro ───────────────────────────────────────
