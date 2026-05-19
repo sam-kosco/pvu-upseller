@@ -1,22 +1,27 @@
 """
 PVU Upsell Document Automation — Entry Point
 =============================================
-Called by GitHub Actions when Power Automate POSTs a JotForm submission.
+Called by GitHub Actions when Power Automate POSTs a JotForm submission ID.
 
-Flow:
-  1. Read the JotForm payload from the environment variable JOTFORM_PAYLOAD
-  2. Obtain a Microsoft Graph API token using client credentials
-  3. Parse the payload into structured data
-  4. Generate the upsell PDF
-  5. Upload the PDF to SharePoint:
-       Shared Documents / Flow Dumps / PVU Upsell PDFs / [tail]_[submissionID].pdf
+New flow (payload too large to pass via GitHub Actions inputs):
+  1. Power Automate saves the raw payload JSON to SharePoint:
+       Flow Dumps/PVU Upsell Payloads/[submissionID].json
+  2. Power Automate calls GitHub Actions with only the submission ID (tiny string)
+  3. This script:
+       a. Gets a Graph token
+       b. Downloads the payload JSON from SharePoint by submission ID
+       c. Parses the payload
+       d. Generates the upsell PDF
+       e. Uploads the PDF to SharePoint:
+            Flow Dumps/PVU Upsell PDFs/[tail]_[submissionID].pdf
+       f. Deletes the staging payload JSON (cleanup)
 
 Environment variables (set as GitHub Secrets):
   TENANT_ID         - Azure AD tenant ID
   CLIENT_ID         - Foxtrot Report Automation app client ID
   CLIENT_SECRET     - Foxtrot Report Automation app client secret
   ANTHROPIC_API_KEY - Anthropic API key (used by generate_upsell_pdf.py)
-  JOTFORM_PAYLOAD   - The full JSON payload from Power Automate (set by workflow YAML)
+  SUBMISSION_ID     - JotForm submission ID (set by workflow YAML from PA input)
 """
 
 import os
@@ -31,8 +36,9 @@ from generate_upsell_pdf import generate_pdf
 # ─────────────────────────────────────────────────────────────
 # SharePoint config
 # ─────────────────────────────────────────────────────────────
-DRIVE_ID      = "b!_bzXaIx86kOufgJN3ih-BaDIDthKYuxJkJtLi1Bm5irGjCEnK-VHSpBRRm3_SDKU"
-OUTPUT_FOLDER = "Flow Dumps/PVU Upsell PDFs"
+DRIVE_ID        = "b!_bzXaIx86kOufgJN3ih-BaDIDthKYuxJkJtLi1Bm5irGjCEnK-VHSpBRRm3_SDKU"
+PAYLOAD_FOLDER  = "Flow Dumps/PVU Upsell Payloads"   # staging — Power Automate writes here
+OUTPUT_FOLDER   = "Flow Dumps/PVU Upsell PDFs"        # final PDFs
 
 
 # ─────────────────────────────────────────────────────────────
@@ -57,23 +63,36 @@ def get_graph_token(tenant_id: str, client_id: str, client_secret: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# SharePoint uploader
+# SharePoint helpers
 # ─────────────────────────────────────────────────────────────
-def upload_to_sharepoint(graph_token: str, local_path: str, filename: str) -> str:
+def download_payload(graph_token: str, submission_id: str) -> dict:
     """
-    Upload a local file to OUTPUT_FOLDER on the DataHub SharePoint drive.
-    Returns the SharePoint URL of the uploaded file.
+    Download the raw payload JSON that Power Automate saved to SharePoint.
+    Returns the parsed dict.
     """
+    sp_path  = f"{PAYLOAD_FOLDER}/{submission_id}.json"
+    url      = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{sp_path}:/content"
+    headers  = {"Authorization": f"Bearer {graph_token}"}
+
+    resp = requests.get(url, headers=headers, timeout=60)
+    if resp.status_code == 404:
+        raise FileNotFoundError(
+            f"Payload not found on SharePoint: {sp_path}\n"
+            f"Make sure Power Automate saved it before triggering GitHub Actions."
+        )
+    resp.raise_for_status()
+    print(f"Payload downloaded from SharePoint: {sp_path}")
+    return resp.json()
+
+
+def upload_pdf(graph_token: str, local_path: str, filename: str) -> str:
+    """Upload the generated PDF to OUTPUT_FOLDER. Returns the SharePoint web URL."""
     sp_path = f"{OUTPUT_FOLDER}/{filename}"
-    url     = (
-        f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}"
-        f"/root:/{sp_path}:/content"
-    )
+    url     = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{sp_path}:/content"
     headers = {
         "Authorization": f"Bearer {graph_token}",
         "Content-Type":  "application/pdf",
     }
-
     with open(local_path, "rb") as f:
         pdf_bytes = f.read()
 
@@ -81,36 +100,48 @@ def upload_to_sharepoint(graph_token: str, local_path: str, filename: str) -> st
     resp.raise_for_status()
 
     web_url = resp.json().get("webUrl", sp_path)
-    print(f"Uploaded to SharePoint: {sp_path}")
+    print(f"PDF uploaded: {sp_path}")
     print(f"  URL: {web_url}")
     return web_url
+
+
+def delete_payload(graph_token: str, submission_id: str) -> None:
+    """Delete the staging payload JSON from SharePoint after processing."""
+    sp_path = f"{PAYLOAD_FOLDER}/{submission_id}.json"
+    url     = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{sp_path}"
+    headers = {"Authorization": f"Bearer {graph_token}"}
+
+    resp = requests.delete(url, headers=headers, timeout=30)
+    if resp.status_code in (200, 204, 404):
+        print(f"Payload staging file deleted: {sp_path}")
+    else:
+        # Non-fatal — log and continue
+        print(f"  Warning: could not delete staging file (HTTP {resp.status_code})")
 
 
 # ─────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────
 def main():
-    # ── Load secrets from environment ────────────────────────
+    # ── Load secrets ─────────────────────────────────────────
     tenant_id     = os.environ["TENANT_ID"]
     client_id     = os.environ["CLIENT_ID"]
     client_secret = os.environ["CLIENT_SECRET"]
     # ANTHROPIC_API_KEY is read automatically by the anthropic library
 
-    # ── Load payload ─────────────────────────────────────────
-    raw_payload = os.environ.get("JOTFORM_PAYLOAD", "")
-    if not raw_payload:
-        raise RuntimeError("JOTFORM_PAYLOAD environment variable is empty.")
-
-    payload = json.loads(raw_payload)
-
-    # Power Automate wraps the JotForm body under a "body" key
-    body = payload.get("body", payload)
-
-    submission_id = str(body.get("submissionID", "unknown"))
+    submission_id = os.environ.get("SUBMISSION_ID", "").strip()
+    if not submission_id:
+        raise RuntimeError("SUBMISSION_ID environment variable is empty.")
     print(f"Processing submission ID: {submission_id}")
 
     # ── Get Graph token ───────────────────────────────────────
     graph_token = get_graph_token(tenant_id, client_id, client_secret)
+
+    # ── Download payload from SharePoint ─────────────────────
+    payload = download_payload(graph_token, submission_id)
+
+    # Power Automate wraps the JotForm body under a "body" key
+    body = payload.get("body", payload)
 
     # ── Parse payload ─────────────────────────────────────────
     print("Parsing payload...")
@@ -123,11 +154,14 @@ def main():
     filename   = f"{tail}_{submission_id}.pdf"
     local_path = os.path.join(tempfile.gettempdir(), filename)
 
-    print(f"Generating PDF → {local_path}")
+    print(f"Generating PDF -> {local_path}")
     generate_pdf(data, graph_token=graph_token, output_path=local_path)
 
-    # ── Upload to SharePoint ──────────────────────────────────
-    upload_to_sharepoint(graph_token, local_path, filename)
+    # ── Upload PDF to SharePoint ──────────────────────────────
+    upload_pdf(graph_token, local_path, filename)
+
+    # ── Clean up staging file ─────────────────────────────────
+    delete_payload(graph_token, submission_id)
 
     print(f"\nDone. File saved as: {filename}")
 
