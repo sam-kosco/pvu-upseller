@@ -3,8 +3,8 @@ name: Generate PVU Upsell Document
 on:
   workflow_dispatch:
     inputs:
-      payload:
-        description: "JotForm payload JSON from Power Automate"
+      submission_id:
+        description: "JotForm submission ID (payload JSON already saved to SharePoint)"
         required: true
         type: string
 
@@ -36,5 +36,5 @@ jobs:
           CLIENT_ID:         ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET:     ${{ secrets.CLIENT_SECRET }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          JOTFORM_PAYLOAD:   ${{ inputs.payload }}
+          SUBMISSION_ID:     ${{ inputs.submission_id }}
         run: python main.py
