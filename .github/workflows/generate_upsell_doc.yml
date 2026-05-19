@@ -21,7 +21,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           pip install \
             reportlab \
@@ -29,6 +29,9 @@ jobs:
             requests \
             anthropic \
             numpy
+
+      - name: Install Node.js dependencies
+        run: npm install -g docx
 
       - name: Generate upsell PDF and upload to SharePoint
         env:
