@@ -119,20 +119,39 @@ Permagard is the industry standard, the warrenty lasts for a year before reappli
 
 ## Nu-Glaze (formerly Polymer Coating)
 
-**What it is:** Nu-Glaze is a higher-quality polymer sealant that provides a protective
-layer over aircraft paint with noticeable gloss enhancement. It offers the same properties
-and warranty as a standard polymer coating but at a higher quality level for the same price.
+**What it is:** Nu-Glaze is NUVITE NuGlaze — a professional-grade paint glosser and UV
+protectant with a polyfluoro sealant. It is applied to painted airframe surfaces (fuselage,
+wings, empennage, engine nacelles, and all other accessible painted areas) to restore gloss,
+protect against UV radiation, and seal the paint surface. It is applied undiluted, panel by
+panel, using a random-orbital buffer and clean lint-free towels.
 
-**Important context:** Polymer sealants are not true ceramic coatings. They can be
-stripped by fuel, chemicals, or harsh environmental exposure, making them a shorter-term
-solution. Some products marketed as "ceramic" contain ceramic particles but behave as
-sealants — if a product can be removed chemically, it is a sealant, not a true ceramic
-coating. Nu-Glaze is significantly less expensive than ceramic or Permagard and
-is suitable for owners seeking a cost-effective near-term option.
+**Application process:** NuGlaze is spread in a thin, even layer onto each panel using
+light pressure with a random-orbital buffer or terry towel. The product is then allowed to
+dry until a white haze forms on the surface (up to 20 minutes depending on humidity).
+Once the haze is uniform, the panel is final-buffed with a clean random-orbital pad to a
+high-gloss shine. Each panel is inspected under good lighting from multiple angles before
+moving to the next. The process is repeated panel by panel across the full airframe.
 
-**Best for:** Owners wanting paint protection and gloss enhancement at a lower price
-point, or as a bridge treatment between major paint events. Typically lasts 3-6 months depending
-on hangar time and flight hours
+**Surface preparation:** Before NuGlaze is applied, the aircraft must be clean, dry, and
+free of contaminants. If the paint shows surface soil or light oxidation, Foxtrot performs a
+pre-clean dry wash with NUVITE NuPower II to restore uniform gloss before applying
+NuGlaze. NuGlaze is intended for paint in good to excellent condition — if paint exhibits
+heavy oxidation, swirl marks, or defects beyond what NuPower II can address, a more
+intensive service (paint correction or ceramic coating) is recommended instead.
+
+**Important context:** NuGlaze is a polyfluoro sealant, not a true ceramic coating. It can
+be stripped by fuel, chemicals, or harsh environmental exposure, making it a shorter-term
+solution compared to ceramic coating or Permagard. Some products marketed as "ceramic"
+contain ceramic particles but behave as sealants — if a product can be removed chemically,
+it is a sealant, not a true ceramic coating. Nu-Glaze is significantly less expensive than
+ceramic or Permagard and is suitable for owners seeking a cost-effective near-term option.
+
+**Products used:** NUVITE NuGlaze (Paint Glosser & UV Protectant with Polyfluoro
+Sealant), NUVITE NuPower II (pre-clean for oxidation or surface soil when needed).
+
+**Best for:** Owners wanting paint protection, UV resistance, and gloss enhancement at a
+lower price point, or as a bridge treatment between major paint events. Typically lasts
+3–6 months depending on hangar time and flight hours.
 
 ---
 
