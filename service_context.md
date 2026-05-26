@@ -117,22 +117,21 @@ Permagard is the industry standard, the warrenty lasts for a year before reappli
 
 ---
 
-## Polymer Coating
+## Nu-Glaze (formerly Polymer Coating)
 
-**What it is:** A polymer sealant that provides a temporary protective layer over aircraft
-paint. Polymer sealants are easier to apply than other coatings and provide a noticeable
-gloss enhancement.
+**What it is:** Nu-Glaze is a higher-quality polymer sealant that provides a protective
+layer over aircraft paint with noticeable gloss enhancement. It offers the same properties
+and warranty as a standard polymer coating but at a higher quality level for the same price.
 
 **Important context:** Polymer sealants are not true ceramic coatings. They can be
 stripped by fuel, chemicals, or harsh environmental exposure, making them a shorter-term
 solution. Some products marketed as "ceramic" contain ceramic particles but behave as
 sealants — if a product can be removed chemically, it is a sealant, not a true ceramic
-coating. Polymer coatings are significantly less expensive than ceramic or Permagard and
-are suitable for owners seeking a cost-effective near-term option. They are not recommended
-for aircraft as a long-term solution.
+coating. Nu-Glaze is significantly less expensive than ceramic or Permagard and
+is suitable for owners seeking a cost-effective near-term option.
 
 **Best for:** Owners wanting paint protection and gloss enhancement at a lower price
-point, or as a bridge treatment between major paint events. Typically lasts 3-6 months depending 
+point, or as a bridge treatment between major paint events. Typically lasts 3-6 months depending
 on hangar time and flight hours
 
 ---
