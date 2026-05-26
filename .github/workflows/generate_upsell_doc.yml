@@ -31,10 +31,11 @@ jobs:
             numpy
 
       - name: Install Node.js dependencies
-        run: npm install -g docx
+        run: npm install docx
 
       - name: Generate upsell PDF and upload to SharePoint
         env:
+          NODE_PATH: ${{ github.workspace }}/node_modules:/usr/local/lib/node_modules
           TENANT_ID:         ${{ secrets.TENANT_ID }}
           CLIENT_ID:         ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET:     ${{ secrets.CLIENT_SECRET }}

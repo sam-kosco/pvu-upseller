@@ -117,7 +117,7 @@ DISPLAY_NAMES = {
 SUPERSECTION_EXAMPLE_PHOTOS = {
     "Metal Polish & Protection": ("Brightwork Before.jpeg", "Brightwork After.jpeg"),
     "Paint Correction & Protective Coatings": ("Paint Coating Before.jpeg", "Paint Coating After.jpeg"),
-    "Detail Work": ("Carpet Extraction Before.jpg", "Carpet Extraction After.jpg"),
+    "Detail Work": ("Carpet Extraction Before.jpeg", "Carpet Extraction After.jpeg"),
 }
 
 # ─────────────────────────────────────────────────────────────
