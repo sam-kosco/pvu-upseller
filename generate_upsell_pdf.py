@@ -535,18 +535,29 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
             notes   = upsell.get("notes", "")
             photos  = upsell.get("photos", [])
 
-            story.append(HRFlowable(width="100%", thickness=0.4,
-                                    color=colors.HexColor("#cccccc"), spaceAfter=4))
             display = DISPLAY_NAMES.get(service, service)
-            price_str = f": ${price}" if price else ""
-            story.append(Paragraph(f"{display}{price_str}", service_s))
+            if price:
+                price_fmt = f"{int(price):,}" if price.isdigit() else price
+                price_str = f": ${price_fmt}"
+            else:
+                price_str = ""
+
+            # Build the service heading + AI paragraph as a KeepTogether
+            # so the title never gets stranded at the bottom of a page.
+            svc_block = [
+                HRFlowable(width="100%", thickness=0.4,
+                           color=colors.HexColor("#cccccc"), spaceAfter=4),
+                Paragraph(f"{display}{price_str}", service_s),
+            ]
 
             if notes or photos:
                 print(f"  Rewriting notes for {service} "
                       f"({'with' if photos else 'without'} photos)...")
                 polished = rewrite_notes(notes, service, photos)
                 if polished:
-                    story.append(Paragraph(polished, body_s))
+                    svc_block.append(Paragraph(polished, body_s))
+
+            story.append(KeepTogether(svc_block))
 
             if photos:
                 story.extend(build_condition_photo_block(photos, tail=data.get("tail", "")))

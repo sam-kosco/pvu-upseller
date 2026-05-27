@@ -133,7 +133,8 @@ def _build_doc_data(data: dict, graph_token: str) -> dict:
         for upsell in section_upsells:
             service = upsell["service"]
             display = DISPLAY_NAMES.get(service, service)
-            price   = upsell.get("price", "")
+            raw_price = upsell.get("price", "")
+            price = f"{int(raw_price):,}" if raw_price and raw_price.isdigit() else raw_price
             notes   = upsell.get("notes", "")
             photos  = upsell.get("photos", [])   # PIL Images
 
