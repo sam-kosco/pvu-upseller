@@ -1,0 +1,6 @@
+# Local secrets — never commit
+pvu.env
+
+# Python build artifacts
+__pycache__/
+*.pyc
