@@ -42,6 +42,8 @@ from generate_upsell_pdf import (
     SERVICE_BOILERPLATE,
     DEFER_EXAMPLE_PHOTOS_TO,
     DISPLAY_NAMES,
+    WARRANTY_NOTES,
+    CIC_BRANDS_WITHOUT_PRODUCT_NAME,
     SUPERSECTION_EXAMPLE_PHOTOS,
     STEPHEN_NAME,
     STEPHEN_PHONE,
@@ -85,6 +87,12 @@ def _build_doc_data(data: dict, graph_token: str) -> dict:
     make_model = " ".join(filter(None, [data.get("make", ""), data.get("model", "")]))
 
     upsell_map = {u["service"]: u for u in data.get("upsells", [])}
+
+    # Per-submission display names: static overrides + CIC brand from q55.
+    display_names = dict(DISPLAY_NAMES)
+    cic_type = (data.get("cic_type") or "").strip()
+    if cic_type:
+        display_names["Xylon"] = cic_type
 
     doc_data = {
         "today":       today,
@@ -132,7 +140,7 @@ def _build_doc_data(data: dict, graph_token: str) -> dict:
         # ── Pass 1: service text blocks + condition photos ────────────────
         for upsell in section_upsells:
             service = upsell["service"]
-            display = DISPLAY_NAMES.get(service, service)
+            display = display_names.get(service, service)
             raw_price = upsell.get("price", "")
             price = f"{int(raw_price):,}" if raw_price and raw_price.isdigit() else raw_price
             notes   = upsell.get("notes", "")
@@ -143,7 +151,11 @@ def _build_doc_data(data: dict, graph_token: str) -> dict:
             if notes or photos:
                 print(f"  [docx] Rewriting notes for {display} "
                       f"({'with' if photos else 'without'} photos)...")
-                polished = rewrite_notes(notes, service, photos)
+                polished = rewrite_notes(
+                    notes, service, photos,
+                    display_name=display,
+                    avoid_product_names=display in CIC_BRANDS_WITHOUT_PRODUCT_NAME,
+                )
 
             # Save condition photos to temp files
             condition_photo_paths = []
@@ -156,6 +168,7 @@ def _build_doc_data(data: dict, graph_token: str) -> dict:
                 "name":              display,
                 "price":             price,
                 "polishedNotes":     polished,
+                "warrantyNote":      WARRANTY_NOTES.get(service, ""),
                 "conditionPhotos":   condition_photo_paths,
                 "conditionCaption":  f"{tail} Current Condition" if tail else "Current Condition",
                 "examplePhotos":     [],   # filled in pass 2
@@ -441,6 +454,12 @@ for (const section of data.sections) {
     // AI-rewritten notes
     const nbp = bodyPara(svc.polishedNotes);
     if (nbp) body.push(nbp);
+
+    // Fixed, always-on warranty statement (bold) — e.g. Ceramic
+    // Coating's 3-year warranty regardless of flight hours.
+    if (svc.warrantyNote) {
+      body.push(bodyPara(svc.warrantyNote, { bold: true }));
+    }
 
     // Condition photos (JotForm)
     for (const el of conditionPhotoBlock(svc.conditionPhotos, svc.conditionCaption)) {

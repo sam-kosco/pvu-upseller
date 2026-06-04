@@ -56,6 +56,15 @@ for aviation brightwork. Benefits include:
 **Important distinction:** Xylon bonds to bare metal surfaces and is specifically designed
 for brightwork (leading edges, nacelles, etc.) — it is not a paint coating.
 
+**Skyde Clear (alternative CIC):** On some aircraft the team applies Skyde Clear instead of
+Xzilon as the corrosion-inhibiting compound (CIC). Skyde Clear is a functionally equivalent
+professional CIC offering the same corrosion protection, salt-spray and UV resistance, heat
+tolerance, and laminar-flow benefits described above — describe the same properties under
+whichever name the proposal uses. Important: we do NOT have a confirmed product or model name
+for Skyde Clear. When the proposal refers to "Skyde Clear," never attach a model number or
+borrow the Xzilon product name (do not write "Skyde Clear 3," "Skyde Clear Aircraft Exterior
+Protector," etc.) — refer to it simply as "Skyde Clear."
+
 ---
 
 ## Ceramic Coating (Paint Correction + Ceramic Coating)

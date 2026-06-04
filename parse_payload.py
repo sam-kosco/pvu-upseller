@@ -15,6 +15,7 @@ Output structure:
         "model":            "Citation X",
         "technician":       "Sam Kosco",
         "customer":         "Duncan",
+        "cic_type":         "Xylon",      # q55: "Xylon" or "Skyde Clear" (display-only)
         "indoc_date":       "2026-04-17",
         "rts_date":         "2026-04-30",
         "included_services": ["Brightwork", "Ceramic Coating"],
@@ -114,6 +115,10 @@ def parse_payload(body: dict) -> dict:
         "make":              _get(body, 47),
         "model":             _get(body, 48),
         "owner":             _get(body, 54),
+        # q55: CIC brand the tech plans to use. Display-only — the internal
+        # service stays "Xylon" everywhere (SERVICE_MAP + tracker). Blank
+        # (e.g. older submissions) defaults to "Xylon".
+        "cic_type":          (_get(body, 55).strip() or "Xylon"),
         "upsells":           [],
     }
 

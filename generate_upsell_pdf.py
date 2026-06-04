@@ -12,8 +12,8 @@ Layout:
   - Body: aircraft header, Stephen's intro, three supersections
 
 Services are organized into three supersections:
-  1. Metal Polish & Protection      — Brightwork, Xylon
-  2. Paint Correction & Coatings    — Ceramic Coating, Permagard, Polymer
+  1. Paint Correction & Coatings    — Ceramic Coating, Permagard, Polymer
+  2. Metal Polish & Protection      — Brightwork, Xylon
   3. Detail Work                    — Interior Detail, Exterior Detail, Carpet Extraction
 
 Note: Xylon's AI observation and field notes appear BEFORE the Brightwork
@@ -67,17 +67,6 @@ SMALL_HDR_H    = 0.35 * inch
 # ─────────────────────────────────────────────────────────────
 SUPERSECTIONS = [
     {
-        "title":    "Metal Polish & Protection",
-        "services": ["Brightwork", "Xylon"],
-        "boilerplate": (
-            "Your aircraft's bare metal surfaces — leading edges, nacelles, wing tips, "
-            "and stabilizers — are among the most exposed components on the airframe. "
-            "Regular polishing and protection keep these surfaces free of oxidation and "
-            "corrosion, preserve their appearance, and can even improve aerodynamic "
-            "performance by maintaining a smooth, laminar surface."
-        ),
-    },
-    {
         "title":    "Paint Correction & Protective Coatings",
         "services": ["Ceramic Coating", "Permagard Coating", "Polymer Coating"],
         "boilerplate": (
@@ -87,6 +76,17 @@ SUPERSECTIONS = [
             "increasing drag and reducing long-term value. The options below represent "
             "good, better, and best levels of protection, all completable without "
             "affecting your return-to-service date."
+        ),
+    },
+    {
+        "title":    "Metal Polish & Protection",
+        "services": ["Brightwork", "Xylon"],
+        "boilerplate": (
+            "Your aircraft's bare metal surfaces — leading edges, nacelles, wing tips, "
+            "and stabilizers — are among the most exposed components on the airframe. "
+            "Regular polishing and protection keep these surfaces free of oxidation and "
+            "corrosion, preserve their appearance, and can even improve aerodynamic "
+            "performance by maintaining a smooth, laminar surface."
         ),
     },
     {
@@ -109,6 +109,27 @@ SUPERSECTIONS = [
 DISPLAY_NAMES = {
     "Polymer Coating": "Nu-Glaze",
 }
+
+# ─────────────────────────────────────────────────────────────
+# Fixed, always-on warranty statements appended (bold) after the
+# AI paragraph for specific services. The AI is told NOT to mention
+# warranty/coverage so these are the single source of truth — e.g.
+# Ceramic Coating is always a confident 3-year warranty regardless
+# of flight hours.
+# ─────────────────────────────────────────────────────────────
+WARRANTY_NOTES = {
+    "Ceramic Coating": "This ceramic coating is backed by a full 3-year warranty, "
+                       "regardless of flight hours.",
+}
+
+# ─────────────────────────────────────────────────────────────
+# CIC brand selected via JotForm field 55 (q55 -> data["cic_type"]).
+# "Xylon" maps to the Xzilon product family, so specific product
+# names (e.g. "Xzilon 3 Aircraft Exterior Protector") are fine.
+# Brands listed here have NO confirmed product/model name — the AI
+# must refer to them generically and never invent one.
+# ─────────────────────────────────────────────────────────────
+CIC_BRANDS_WITHOUT_PRODUCT_NAME = {"Skyde Clear"}
 
 # ─────────────────────────────────────────────────────────────
 # Supersection-level example photos (before/after)
@@ -289,11 +310,15 @@ def _pil_to_b64(pil_img: Image.Image, max_px: int = 1024) -> str:
 # ─────────────────────────────────────────────────────────────
 # AI note rewriter
 # ─────────────────────────────────────────────────────────────
-def rewrite_notes(raw_notes: str, service_name: str, condition_photos: list) -> str:
+def rewrite_notes(raw_notes: str, service_name: str, condition_photos: list,
+                  display_name: str | None = None,
+                  avoid_product_names: bool = False) -> str:
     if not raw_notes and not condition_photos:
         return ""
 
-    display_name = DISPLAY_NAMES.get(service_name, service_name)
+    # Caller may override the display name (e.g. CIC brand from q55).
+    if display_name is None:
+        display_name = DISPLAY_NAMES.get(service_name, service_name)
 
     content = []
     instruction = (
@@ -311,16 +336,25 @@ def rewrite_notes(raw_notes: str, service_name: str, condition_photos: list) -> 
             f"condition of this aircraft. Use what you see.\n\n"
         )
     instruction += (
-        "Write 3-5 sentences: warm, professional, client-facing. Begin with a brief "
-        "explanation of what this service involves (the scope of work), then describe "
-        "the specific condition observed on this aircraft and why the service is "
-        "recommended. No heading, no preamble. Refer to the service as "
-        f"\"{display_name}\" (never \"{service_name}\")." if display_name != service_name
-        else "Write 3-5 sentences: warm, professional, client-facing. Begin with a brief "
-        "explanation of what this service involves (the scope of work), then describe "
-        "the specific condition observed on this aircraft and why the service is "
-        "recommended. No heading, no preamble."
+        "Write 2-3 concise sentences: warm, professional, client-facing, and not wordy. "
+        "Begin with a brief explanation of what this service involves (the scope of work), "
+        "then describe the specific condition observed on this aircraft and why the service "
+        "is recommended. No heading, no preamble."
     )
+    if display_name != service_name:
+        instruction += f" Refer to the service as \"{display_name}\" (never \"{service_name}\")."
+    if avoid_product_names:
+        instruction += (
+            f" Do not use, invent, or imply any specific product, product-line, or model "
+            f"name for this service (for example, never write \"Xzilon 3\" or "
+            f"\"Aircraft Exterior Protector\"). Refer to it only as \"{display_name}\" and "
+            f"describe its benefits generically."
+        )
+    if service_name in WARRANTY_NOTES:
+        instruction += (
+            " Do not mention any warranty, guarantee, or coverage period — that is "
+            "stated separately."
+        )
     content.append({"type": "text", "text": instruction})
     for photo in condition_photos[:3]:
         try:
@@ -494,6 +528,14 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
     # ── Build upsell lookup ───────────────────────────────────
     upsell_map = {u["service"]: u for u in data.get("upsells", [])}
 
+    # Per-submission display names: start from the static overrides and
+    # apply the CIC brand chosen on the JotForm (q55 -> cic_type). The
+    # internal service name stays "Xylon" everywhere else.
+    display_names = dict(DISPLAY_NAMES)
+    cic_type = (data.get("cic_type") or "").strip()
+    if cic_type:
+        display_names["Xylon"] = cic_type
+
     # ── Supersections ─────────────────────────────────────────
     for section in SUPERSECTIONS:
         section_upsells = [upsell_map[s] for s in section["services"] if s in upsell_map]
@@ -535,7 +577,7 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
             notes   = upsell.get("notes", "")
             photos  = upsell.get("photos", [])
 
-            display = DISPLAY_NAMES.get(service, service)
+            display = display_names.get(service, service)
             if price:
                 price_fmt = f"{int(price):,}" if price.isdigit() else price
                 price_str = f": ${price_fmt}"
@@ -553,9 +595,19 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
             if notes or photos:
                 print(f"  Rewriting notes for {service} "
                       f"({'with' if photos else 'without'} photos)...")
-                polished = rewrite_notes(notes, service, photos)
+                polished = rewrite_notes(
+                    notes, service, photos,
+                    display_name=display,
+                    avoid_product_names=display in CIC_BRANDS_WITHOUT_PRODUCT_NAME,
+                )
                 if polished:
                     svc_block.append(Paragraph(polished, body_s))
+
+            # Fixed, always-on warranty statement (bold) — e.g. Ceramic
+            # Coating's 3-year warranty regardless of flight hours.
+            warranty = WARRANTY_NOTES.get(service)
+            if warranty:
+                svc_block.append(Paragraph(f"<b>{warranty}</b>", body_s))
 
             story.append(KeepTogether(svc_block))
 
@@ -646,7 +698,7 @@ if __name__ == "__main__":
     import sys
     import tempfile
     _self = sys.modules[__name__]
-    _self.rewrite_notes          = lambda n, s, p: f"[AI: {n or 'visual observation'}]"
+    _self.rewrite_notes          = lambda n, s, p, **kw: f"[AI: {n or 'visual observation'}]"
     _self.fetch_sharepoint_photo = lambda t, f: _fake_photo((220, 220, 180))
 
     print("Running smoke test...")
