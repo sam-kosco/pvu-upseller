@@ -11,10 +11,11 @@ New flow (payload too large to pass via GitHub Actions inputs):
        a. Gets a Graph token
        b. Downloads the payload JSON from SharePoint by submission ID
        c. Parses the payload
-       d. Generates the upsell PDF
-       e. Uploads the PDF to SharePoint:
+       d. Looks up the sender in the PVU Upseller.xlsx sender sheet
+       e. Generates the upsell PDF
+       f. Uploads the PDF to SharePoint:
             Flow Dumps/PVU Upsell PDFs/[tail]_[submissionID].pdf
-       f. Deletes the staging payload JSON (cleanup)
+       g. Deletes the staging payload JSON (cleanup)
 
 Environment variables (set as GitHub Secrets):
   TENANT_ID         - Azure AD tenant ID
@@ -24,10 +25,13 @@ Environment variables (set as GitHub Secrets):
   SUBMISSION_ID     - JotForm submission ID (set by workflow YAML from PA input)
 """
 
+import io
 import os
 import json
 import requests
 import tempfile
+
+import openpyxl
 
 from parse_payload import parse_payload
 from generate_upsell_pdf import generate_pdf
@@ -40,6 +44,8 @@ from generate_upsell_docx import generate_docx
 DRIVE_ID        = "b!_bzXaIx86kOufgJN3ih-BaDIDthKYuxJkJtLi1Bm5irGjCEnK-VHSpBRRm3_SDKU"
 PAYLOAD_FOLDER  = "Flow Dumps/PVU Upsell Payloads"   # staging — Power Automate writes here
 OUTPUT_FOLDER   = "Flow Dumps/PVU Upsell PDFs"        # final PDFs
+TRACKER_PATH    = "Report Automation/PVU/PVU Upseller.xlsx"   # holds the sender sheet
+SENDER_COLUMNS  = ("name", "email", "position", "phone")      # sender sheet headers
 
 
 # ─────────────────────────────────────────────────────────────
@@ -84,6 +90,51 @@ def download_payload(graph_token: str, submission_id: str) -> dict:
     resp.raise_for_status()
     print(f"Payload downloaded from SharePoint: {sp_path}")
     return resp.json()
+
+
+def load_senders(graph_token: str) -> dict:
+    """
+    Read the sender sheet from PVU Upseller.xlsx: the sheet whose first row has
+    Name / Email / Position / Phone headers. Returns {lowercased email: sender dict}.
+    """
+    url     = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/{TRACKER_PATH}:/content"
+    headers = {"Authorization": f"Bearer {graph_token}"}
+    resp = requests.get(url, headers=headers, timeout=60)
+    resp.raise_for_status()
+
+    wb = openpyxl.load_workbook(io.BytesIO(resp.content), read_only=True, data_only=True)
+    for ws in wb.worksheets:
+        rows = ws.iter_rows(values_only=True)
+        columns = [str(h or "").strip().lower() for h in next(rows, ())]
+        if not set(SENDER_COLUMNS) <= set(columns):
+            continue
+        senders = {}
+        for row in rows:
+            cells = {h: str(v if v is not None else "").strip() for h, v in zip(columns, row)}
+            if cells["email"]:
+                senders[cells["email"].lower()] = {h: cells[h] for h in SENDER_COLUMNS}
+        return senders
+    raise RuntimeError(f"No sheet with {SENDER_COLUMNS} headers in {TRACKER_PATH}")
+
+
+def resolve_sender(answer_emails: list, senders: dict) -> dict:
+    """
+    Pick the sender from the form's email answers. Fails rather than guessing, so a
+    document never goes out speaking as the wrong person; the staging payload is kept,
+    so the run can be re-dispatched once the sheet is fixed.
+    """
+    matches = [e for e in answer_emails if e in senders]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"Expected one form answer matching the sender sheet in {TRACKER_PATH}, "
+            f"got {matches}. Emails in the form: {answer_emails}. "
+            f"Emails in the sheet: {sorted(senders)}."
+        )
+    sender = senders[matches[0]]
+    blank = [h for h in SENDER_COLUMNS if not sender[h]]
+    if blank:
+        raise RuntimeError(f"Sender sheet row for {matches[0]} is missing: {blank}")
+    return sender
 
 
 def upload_pdf(graph_token: str, local_path: str, filename: str) -> str:
@@ -150,6 +201,10 @@ def main():
     tail = data.get("tail", "unknown").replace(" ", "_")
     print(f"  Tail: {tail}")
     print(f"  Upsells: {[u['service'] for u in data.get('upsells', [])]}")
+
+    # ── Look up sender ────────────────────────────────────────
+    data["sender"] = resolve_sender(data["answer_emails"], load_senders(graph_token))
+    print(f"  Sender: {data['sender']['name']}")
 
     # ── Generate PDF ──────────────────────────────────────────
     pdf_filename = f"{tail}_{submission_id}.pdf"

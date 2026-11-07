@@ -6,11 +6,11 @@ This file gives you everything you need to understand and continue working on th
 
 ## Project Overview
 
-**What it does:** When a tech at Duncan Aviation PVU (Provo, Utah) completes an aircraft detailing assessment via JotForm, this automation generates a professional upsell sales proposal (PDF + Word doc) and emails it to Stephen Chadbourn (GM, PVU) with the Word doc linked for editing. It also logs every submission to a tracking spreadsheet.
+**What it does:** When a tech at Duncan Aviation PVU (Provo, Utah) completes an aircraft detailing assessment via JotForm, this automation generates a professional upsell sales proposal (PDF + Word doc) and emails it to the person picked in the form's send-to dropdown with the Word doc linked for editing. The document speaks as that person (intro + footer) — see **Sender profiles** below. It also logs every submission to a tracking spreadsheet.
 
 **Who uses it:**
 - **Techs** — fill out the JotForm after inspecting an aircraft
-- **Stephen Chadbourn** — receives the generated proposal, edits if needed, sends to customer
+- **Sender (send-to dropdown)** — anyone with a row on the workbook's sender sheet (currently Stephen Chadbourn, Timothy Hutchins); receives the generated proposal, edits if needed, sends to customer
 - **Sam Kosco** — sole data analyst; maintains this automation
 
 **Business context:** FoxTrot Aviation is an aircraft detailing company (~500 employees). PVU is one location. Services offered: Private Detailing, Commercial Detailing, MRO (CIC Removal), and Facilities. This automation covers the Private Detailing upsell workflow.
@@ -55,11 +55,11 @@ Power Automate (PVU Upseller flow)
   Step 6: Create anonymous sharing link for the DOCX
   Step 7: Get PDF file content (for email attachment)
   Step 8: Update tracker row with the DOCX sharing link
-  Step 9: Send email to Sam + Stephen with PDF attached and DOCX link
+  Step 9: Send email to the send-to dropdown address with PDF attached and DOCX link
       │
       ▼
 GitHub Actions (generate_upsell_doc.yml)
-  - Installs Python deps (reportlab, pillow, requests, anthropic, numpy)
+  - Installs Python deps (reportlab, pillow, requests, anthropic, numpy, openpyxl)
   - Installs Node deps (docx)
   - Runs: python main.py
       │
@@ -69,11 +69,12 @@ main.py
   2. Gets Microsoft Graph API token (client credentials)
   3. Downloads payload JSON from SharePoint staging
   4. Calls parse_payload() → structured data dict
-  5. Calls generate_pdf() → saves PDF to temp
-  6. Calls generate_docx() → saves DOCX to temp
-  7. Uploads PDF to SharePoint output folder
-  8. Uploads DOCX to SharePoint output folder
-  9. Deletes staging payload JSON (cleanup)
+  5. Looks up the sender in the PVU Upseller.xlsx sender sheet → data["sender"]
+  6. Calls generate_pdf() → saves PDF to temp
+  7. Calls generate_docx() → saves DOCX to temp
+  8. Uploads PDF to SharePoint output folder
+  9. Uploads DOCX to SharePoint output folder
+  10. Deletes staging payload JSON (cleanup)
 ```
 
 ---
@@ -97,6 +98,7 @@ Converts the raw JotForm/Power Automate JSON body into a clean Python dict.
 | 48 | Aircraft model |
 | 54 | Owner name |
 | 55 | CIC brand — "Xylon" or "Skyde Clear" (display-only; defaults to "Xylon" when blank) |
+| (any) | Send-to email dropdown — found by value, not question number (`_answer_emails`); picks the recipient (in PA) and the sender (in the docs) |
 
 **Upsell service field pattern** (Yes/No → Photos → Price → Notes):
 
@@ -186,6 +188,8 @@ INCLUDE_EXAMPLE_PHOTOS = {  # all False — photos now at supersection level
 SERVICE_BOILERPLATE = {}  # empty — AI handles everything
 ```
 
+**Sender profiles:** who the document speaks as (intro paragraph and every-page footer, both outputs) comes from the sender sheet in `PVU Upseller.xlsx` — the sheet with `Name / Email / Position / Phone` headers (`load_senders()` in `main.py`). The intro wording is `SENDER_INTRO` here. **To add a person: add their email to the JotForm dropdown and a row to that sheet — no code change.** A form email with no row fails the Actions run rather than speaking as the wrong person; the staging payload is kept, so add the row and re-run the workflow with the submission ID.
+
 **To add a display name override:** Add to `DISPLAY_NAMES` dict. Internal name stays the same everywhere else.
 
 **To update supersection intro text:** Edit `SUPERSECTIONS[n]["boilerplate"]` in `generate_upsell_pdf.py`.
@@ -216,7 +220,7 @@ The AI knowledge base. Loaded at startup by `generate_upsell_pdf.py` as the Clau
 - Exterior Detail (degreasing, wash wax, what gets cleaned)
 - Carpet Extraction (hot water extraction, pre-spray, AquaPro Vac)
 
-Stephen can edit this file freely — changes take effect on the next run with no code changes.
+This file can be edited freely — changes take effect on the next run with no code changes.
 
 ---
 
@@ -298,9 +302,9 @@ Power Automate writes a row on each submission with:
 7. `Create_sharing_link_for_a_file_or_folder` — creates anonymous edit link for DOCX
 8. `Get_file_content_using_path` — downloads PDF bytes for email attachment
 9. `Update_a_row` — adds DOCX sharing link back to tracker row
-10. `Send_an_email_(V2)` — emails Sam + Stephen with PDF attached, DOCX linked
+10. `Send_an_email_(V2)` — emails the send-to dropdown address with PDF attached, DOCX linked
 
-**Email recipients:** `samuel.kosco@foxtrotaviation.com; stephen.chadbourn@foxtrotaviation.com`
+**Email recipients:** the JotForm send-to dropdown answer (was hardcoded `samuel.kosco@foxtrotaviation.com; stephen.chadbourn@foxtrotaviation.com`)
 **Email subject:** `PVU Upsell Document for [Make Model] ([TAIL])`
 
 **GitHub API endpoint:**
@@ -346,7 +350,7 @@ The tail is always uppercase (enforced in `parse_payload.py`).
 
 It receives:
 - `service_context.md` as system prompt (Foxtrot's knowledge base)
-- Stephen's raw field note
+- The technician's raw field note
 - Up to 3 condition photos from the JotForm (vision capability)
 - The display name for the service (e.g. "Nu-Glaze" not "Polymer Coating", or the CIC brand from q55)
 
@@ -414,6 +418,7 @@ pillow         # Image processing
 requests       # Graph API calls / SharePoint photo fetching
 anthropic      # Claude API (note rewriting)
 numpy          # Photo manipulation helpers
+openpyxl       # Reads the sender sheet from PVU Upseller.xlsx
 ```
 
 ### Node.js
@@ -448,7 +453,7 @@ Output goes to the system temp directory (e.g. `%TEMP%\upsell_test.pdf`).
 Never put `CLIENT_SECRET`, `ANTHROPIC_API_KEY`, or the GitHub PAT in any file committed to the repo. They live only in GitHub Secrets. The local `pvu.env` file is for local testing only — do not commit it.
 
 ### 4. `generate_upsell_docx.py` imports from `generate_upsell_pdf.py`
-All shared config (service lists, display names, supersection photos, Stephen's contact info, etc.) lives in `generate_upsell_pdf.py`. `generate_upsell_docx.py` imports from it. If Claude Code edits config, it should always edit `generate_upsell_pdf.py` — never duplicate values into the docx file.
+All shared config (service lists, display names, supersection photos, sender profiles, etc.) lives in `generate_upsell_pdf.py`. `generate_upsell_docx.py` imports from it. If Claude Code edits config, it should always edit `generate_upsell_pdf.py` — never duplicate values into the docx file.
 
 ### 5. The JS builder script is a Python string
 The Node.js docx builder lives as the `DOCX_BUILDER_JS` string constant inside `generate_upsell_docx.py`. Claude Code will need to treat it carefully — it's JavaScript embedded in Python. When editing it, make sure to preserve the raw string delimiters (`r"""..."""`).

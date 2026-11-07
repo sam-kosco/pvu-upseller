@@ -2,18 +2,18 @@
 PVU Upsell Word Document Generator
 ====================================
 Generates a .docx version of the upsell proposal alongside the PDF.
-Stephen can open it in Word and make any last-minute edits before
+The recipient can open it in Word and make any last-minute edits before
 sending it to the customer.
 
 Content mirrors generate_upsell_pdf.py exactly:
   - Logo on page 1
   - Small header (Foxtrot Aviation Services | Duncan Aviation PVU | date) every page
   - Aircraft info block
-  - Stephen's intro
+  - Sender's intro (data["sender"], resolved in main.py)
   - Three supersections with per-service blocks
   - Condition photos (from JotForm) with "[Tail] Current Condition" caption
   - Example photos (from SharePoint) with "[Service] Example Photo" caption
-  - Footer: Stephen's name | phone | email every page
+  - Footer: sender's name | phone | email every page
 
 Usage:
     from generate_upsell_docx import generate_docx
@@ -45,10 +45,7 @@ from generate_upsell_pdf import (
     WARRANTY_NOTES,
     CIC_BRANDS_WITHOUT_PRODUCT_NAME,
     SUPERSECTION_EXAMPLE_PHOTOS,
-    STEPHEN_NAME,
-    STEPHEN_PHONE,
-    STEPHEN_EMAIL,
-    STEPHEN_INTRO,
+    SENDER_INTRO,
     SERVICE_CONTEXT,
     DRIVE_ID,
     EXAMPLE_PHOTO_BASE,
@@ -87,6 +84,7 @@ def _build_doc_data(data: dict, graph_token: str) -> dict:
     make_model = " ".join(filter(None, [data.get("make", ""), data.get("model", "")]))
 
     upsell_map = {u["service"]: u for u in data.get("upsells", [])}
+    sender     = data["sender"]
 
     # Per-submission display names: static overrides + CIC brand from q55.
     display_names = dict(DISPLAY_NAMES)
@@ -99,10 +97,10 @@ def _build_doc_data(data: dict, graph_token: str) -> dict:
         "tail":        tail,
         "makeModel":   make_model,
         "owner":       owner,
-        "intro":       STEPHEN_INTRO,
-        "footerName":  STEPHEN_NAME,
-        "footerPhone": STEPHEN_PHONE,
-        "footerEmail": STEPHEN_EMAIL,
+        "intro":       SENDER_INTRO.format(**sender),
+        "footerName":  sender["name"],
+        "footerPhone": sender["phone"],
+        "footerEmail": sender["email"],
         "logoPath":    LOGO_PATH or "",
         "sections":    [],
         "tempFiles":   [],   # collect for cleanup

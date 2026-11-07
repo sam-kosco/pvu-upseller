@@ -8,8 +8,11 @@ Layout:
   - Page 1 header:    Foxtrot Aviation logo (centered, page 1 only)
   - Every page header (small, top-right): "Foxtrot Aviation Services /
                                            Duncan Aviation PVU / MM/DD/YYYY"
-  - Every page footer (centered):  Stephen's name | phone | email
-  - Body: aircraft header, Stephen's intro, three supersections
+  - Every page footer (centered):  sender's name | phone | email
+  - Body: aircraft header, sender's intro, three supersections
+
+The sender (who the document speaks as) is data["sender"], resolved per
+submission in main.py from the JotForm send-to email + the workbook's sender sheet.
 
 Services are organized into three supersections:
   1. Paint Correction & Coatings    — Ceramic Coating, Permagard, Polymer
@@ -187,14 +190,11 @@ EXAMPLE_PHOTO_NAMES = {
 SERVICE_BOILERPLATE = {}
 
 # ─────────────────────────────────────────────────────────────
-# Stephen's contact info
+# Sender intro — who the document speaks as. The sender's details come from
+# the sender sheet in PVU Upseller.xlsx (resolved in main.py as data["sender"]).
 # ─────────────────────────────────────────────────────────────
-STEPHEN_NAME  = "Stephen Chadbourn"
-STEPHEN_PHONE = "520.981.8942"
-STEPHEN_EMAIL = "stephen.chadbourn@foxtrotaviation.com"
-
-STEPHEN_INTRO = (
-    "Hello, I'm Stephen Chadbourn, General Manager of the Foxtrot Aviation team at "
+SENDER_INTRO = (
+    "Hello, I'm {name}, {position} of the Foxtrot Aviation team at "
     "Duncan Aviation in Provo, Utah. We provide aircraft detailing during maintenance "
     "events and are committed to returning your aircraft in exceptional condition."
 )
@@ -254,9 +254,9 @@ def _draw_small_header(c: rl_canvas.Canvas) -> None:
     c.restoreState()
 
 
-def _draw_footer(c: rl_canvas.Canvas) -> None:
+def _draw_footer(c: rl_canvas.Canvas, sender: dict) -> None:
     """Centered footer on every page: Name  |  Phone  |  Email"""
-    footer_text = f"{STEPHEN_NAME}   |   {STEPHEN_PHONE}   |   {STEPHEN_EMAIL}"
+    footer_text = f"{sender['name']}   |   {sender['phone']}   |   {sender['email']}"
     c.saveState()
     c.setFont("Helvetica", 8)
     c.setFillColor(colors.HexColor("#555555"))
@@ -282,15 +282,15 @@ def _draw_logo_header(c: rl_canvas.Canvas) -> None:
     )
 
 
-def on_first_page(c: rl_canvas.Canvas, doc) -> None:
+def on_first_page(c: rl_canvas.Canvas, doc, sender: dict) -> None:
     _draw_logo_header(c)
     _draw_small_header(c)
-    _draw_footer(c)
+    _draw_footer(c, sender)
 
 
-def on_later_pages(c: rl_canvas.Canvas, doc) -> None:
+def on_later_pages(c: rl_canvas.Canvas, doc, sender: dict) -> None:
     _draw_small_header(c)
-    _draw_footer(c)
+    _draw_footer(c, sender)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -327,7 +327,7 @@ def rewrite_notes(raw_notes: str, service_name: str, condition_photos: list,
         f"SERVICE: {display_name}\n\n"
     )
     instruction += (
-        f"Stephen's raw field note: \"{raw_notes}\"\n\n" if raw_notes
+        f"Technician's raw field note: \"{raw_notes}\"\n\n" if raw_notes
         else "No field note provided. Write based on the photos.\n\n"
     )
     if condition_photos:
@@ -505,6 +505,8 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
                                fontSize=11, leading=14, spaceAfter=4,
                                fontName="Helvetica-Bold")
 
+    sender = data["sender"]
+
     story = []
 
     # Reserve space for logo on page 1
@@ -521,8 +523,8 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
         story.append(Paragraph(f"<b>Owner:</b> {owner}", title_s))
     story.append(Spacer(1, 10))
 
-    # ── Stephen's intro ───────────────────────────────────────
-    story.append(Paragraph(STEPHEN_INTRO, body_s))
+    # ── Sender's intro ────────────────────────────────────────
+    story.append(Paragraph(SENDER_INTRO.format(**sender), body_s))
     story.append(Spacer(1, 8))
 
     # ── Build upsell lookup ───────────────────────────────────
@@ -657,7 +659,11 @@ def generate_pdf(data: dict, graph_token: str, output_path: str = "upsell.pdf") 
         topMargin=MARGIN + SMALL_HDR_H,         # room for small header
         bottomMargin=MARGIN + FOOTER_HEIGHT,    # room for footer
     )
-    doc.build(story, onFirstPage=on_first_page, onLaterPages=on_later_pages)
+    doc.build(
+        story,
+        onFirstPage=lambda c, d: on_first_page(c, d, sender),
+        onLaterPages=lambda c, d: on_later_pages(c, d, sender),
+    )
     print(f"\nPDF saved: {output_path}")
     return os.path.abspath(output_path)
 
@@ -677,6 +683,8 @@ if __name__ == "__main__":
     fake_data = {
         "tail": "N253SY", "make": "Cessna", "model": "Citation X",
         "customer": "Duncan Aviation",
+        "sender": {"name": "Test Person", "email": "test.person@foxtrotaviation.com",
+                   "position": "General Manager", "phone": "555-000-0000"},
         "indoc_date": "2026-04-17", "rts_date": "2026-04-30",
         "included_services": ["Brightwork"],
         "upsells": [

@@ -16,6 +16,7 @@ Output structure:
         "technician":       "Sam Kosco",
         "customer":         "Duncan",
         "cic_type":         "Xylon",      # q55: "Xylon" or "Skyde Clear" (display-only)
+        "answer_emails":    ["stephen.chadbourn@foxtrotaviation.com"],  # see _answer_emails
         "indoc_date":       "2026-04-17",
         "rts_date":         "2026-04-30",
         "included_services": ["Brightwork", "Ceramic Coating"],
@@ -36,6 +37,7 @@ Included services come from q7 (semicolon-separated string).
 
 import base64
 import io
+import re
 
 from PIL import Image
 
@@ -53,6 +55,8 @@ SERVICE_MAP = {
     "Carpet Extraction":(22, 23, 44, 45),
     "Xylon":            (49, 53, 50, 51),
 }
+
+EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 
 def _get(body, q):
@@ -81,6 +85,20 @@ def _extract_images(body, q):
             except Exception as e:
                 print(f"  Warning: could not decode image in q{q}: {e}")
     return images
+
+
+def _answer_emails(body):
+    """
+    Return every form answer that is exactly an email address (lowercased).
+
+    The JotForm send-to dropdown is found by value rather than question number;
+    main.py matches these against the workbook's sender sheet.
+    """
+    emails = set()
+    for q, value in body.items():
+        if q.isdigit() and isinstance(value, str) and EMAIL_RE.fullmatch(value.strip()):
+            emails.add(value.strip().lower())
+    return sorted(emails)
 
 
 def parse_payload(body: dict) -> dict:
@@ -119,6 +137,7 @@ def parse_payload(body: dict) -> dict:
         # service stays "Xylon" everywhere (SERVICE_MAP + tracker). Blank
         # (e.g. older submissions) defaults to "Xylon".
         "cic_type":          (_get(body, 55).strip() or "Xylon"),
+        "answer_emails":     _answer_emails(body),
         "upsells":           [],
     }
 
@@ -157,6 +176,7 @@ if __name__ == "__main__":
         "8":  "Duncan",
         "47": "Cessna",
         "48": "Citation X",
+        "56": "stephen.chadbourn@foxtrotaviation.com",
         # Brightwork → No
         "10": "No",
         "11": [{"url": "", "file": "", "name": ""}],

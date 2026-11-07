@@ -248,6 +248,5 @@ The Foxtrot Aviation team is based on-site at Duncan Aviation in Provo, Utah, an
 private aircraft owners undergoing maintenance events. We are a large, experienced company
 with deep expertise in both detailing and protective coatings. Our approach emphasizes
 thorough preparation, certified product application, and long-term relationships with
-aircraft owners and operators. Stephen Chadbourn serves as General Manager of the PVU
-location and is available on-site to answer questions and walk through any recommendations
-in person.
+aircraft owners and operators. The PVU team is available on-site to answer questions and
+walk through any recommendations in person.
